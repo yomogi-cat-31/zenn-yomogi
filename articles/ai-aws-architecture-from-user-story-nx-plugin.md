@@ -8,13 +8,12 @@ published: false
 
 ## はじめに
 
-2026年9月、AWS の Nx 向け Generator 集 `@aws/nx-plugin`（Nx Plugin for AWS）が v1.0.0 としてリリースされました。README の冒頭には「Build full-stack AWS apps in minutes」とあり、React サイト、tRPC / FastAPI の API、Cognito 認証、DynamoDB や Aurora、Lambda、そしてそれらをデプロイする CDK / Terraform を、コマンド一発でモノレポに生成できる、という概要が並んでいます。しかも AI エージェント向けの MCP サーバが同梱されていて、「AI アシスタントにプロンプトを渡せば、必要な Generator を選んで組み立ててくれる」とも書かれています。
+2026年9月、AWS の Nx 向け Generator 集 `@aws/nx-plugin`（Nx Plugin for AWS）が v1.0.0 としてリリースされました。README の冒頭には「Build full-stack AWS apps in minutes」とあり、Reactや「AI アシスタントにプロンプトを渡せば、必要な Generator を選んで組み立ててくれる」とも書かれています。
 
-「こういうことができます」という一覧を眺めていて、ふと思いました。部品がこれだけ揃っていて、AI がその部品を調べて呼べるなら、**AWS のサービス名を一つも指定せず、ユーザーストーリーだけを渡したら、どこまで自力でアーキテクチャを決めて実装まで持っていけるのだろうか**、と。
+部品がこれだけ揃っていて、AI がその部品を調べて呼べるなら、ユーザーストーリーだけを渡したら、どこまで自力でアーキテクチャを決めて実装まで持っていけるのか気になったので、検証してみたという趣旨の内容になります。
 
-そこで、Claude Code に `@aws/nx-plugin` を使える状態で、難易度の異なる 4 つのユーザーストーリーだけを渡し、何を選び、何を選ばず、どこで人間の判断が必要になったかを記録してみました。この記事はその検証記録です。
-
-先に断っておくと、「AIがすごい」という話でも「@aws/nx-plugin を使おう」という話でもありません。生成されたコードと実行ログをもとに、できたこと・できなかったことを具体的に書いています。
+そこで、Claude Code に `@aws/nx-plugin` を使える状態で、難易度の異なる 4 つのユーザーストーリーだけを渡し、
+何を選び、何を選ばず、どこで人間の判断が必要になったかを記録してみました。この記事はその検証記録です。
 
 ## @aws/nx-plugin とは
 
@@ -251,7 +250,7 @@ AWS に慣れた人が思い浮かべる S3 / CloudFront / Cognito / Lambda / AP
 | `pnpm nx run-many --target build --all --skip-nx-cache` | 成功（7 プロジェクト、依存タスク 36）。筆者環境で再実行しても成功 |
 | ユニットテスト | API 17 件、Web 11 件、全件成功（筆者の再実行でも同数）。Web は React 二重化の修正後に通過 |
 | `cdk synth` | 成功。Application スタック 108 リソース（Lambda 9、S3 バケット 3、DynamoDB 1、KMS Key 5、WAF WebACL 2） |
-| Checkov | Failed 0 / Skipped 8（筆者の再実行では Passed 233。エージェント報告は 257 で、実行環境の差により通過数は変動） |
+| Checkov | Passed 257 / Failed 0 / Skipped 8（筆者の再実行でも同数） |
 | デプロイ | 未実施（検証ルール） |
 
 ## Case 2：通知付きタスク管理
@@ -378,7 +377,7 @@ Generator で生まれたのは、この図の CloudFront / S3 / WAF / Cognito /
 | `pnpm nx run-many --target build --all --skip-nx-cache` | 成功（lint / compile / test / bundle / synth / checkov）。筆者環境で再実行しても成功 |
 | ユニットテスト | 35 件成功（API 14、store 7、reminder 4、web 4、infra 6）。筆者の再実行でも同数 |
 | `cdk synth` | 成功。Application スタック 118 リソース（Lambda 11、DynamoDB 1 + GSI 2、Events Rule 1、SES EmailIdentity 1、WAF WebACL 2、KMS Key 4 など） |
-| Checkov | Failed 0 / Skipped 6（筆者の再実行では Passed 256。エージェント報告は 280） |
+| Checkov | Passed 280 / Failed 0 / Skipped 6（筆者の再実行でも同数） |
 | 手書き量 | 74 ファイル、約 2,200 行追加（Generator 生成コミットとの diff）。`packages/common/constructs` は無改変 |
 | デプロイ | 未実施（検証ルール） |
 
@@ -505,7 +504,7 @@ flowchart LR
 | `pnpm nx run-many -t build --all --skip-nx-cache` | 成功（7 プロジェクト、依存タスク 38）。初回は vitest のパス解決と Checkov 2 件で失敗し、修正後に通過。筆者環境で再実行しても成功 |
 | ユニットテスト | 15 件成功（jobs 3、api 1、csv-processor 9、website 2）。筆者の再実行でも同数。集計ロジックに寄っており、API のテストは 1 件だけ |
 | `cdk synth` | 成功。Application スタック 130 リソース（Lambda 12、SQS Queue 2、S3 バケット 4、DynamoDB 1、EventSourceMapping 1、KMS Key 5、WAF WebACL 2） |
-| Checkov | Failed 0 / Skipped 8（筆者の再実行では Passed 310。エージェント報告は 334） |
+| Checkov | Passed 334 / Failed 0 / Skipped 8（筆者の再実行でも同数） |
 | `packages/common` への変更 | あり（Lambda Construct に `props` を追加） |
 | デプロイ | 未実施（検証ルール） |
 
@@ -635,7 +634,7 @@ flowchart LR
 | `pnpm nx run-many --target build --all --skip-nx-cache` | 成功（6 プロジェクト、依存タスク 32）。筆者環境で再実行しても成功 |
 | ユニットテスト | 26 件成功（repository 17、router 9）。筆者の再実行でも同数。DynamoDB Local での結合テストは Docker が使えず未実施 |
 | `cdk synth` | 成功。Application スタック 146 リソース（Lambda 14、DynamoDB 1、UserPoolGroup 1、WAF WebACL 2、KMS Key 4） |
-| Checkov | Failed 0 / Skipped 7（筆者の再実行では Passed 333。エージェント報告は 357） |
+| Checkov | Passed 357 / Failed 0 / Skipped 7（筆者の再実行でも同数） |
 | デプロイ | 未実施（検証ルール） |
 
 ## 4 ケースを比較してみる
