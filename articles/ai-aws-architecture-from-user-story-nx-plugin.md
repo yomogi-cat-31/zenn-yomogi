@@ -209,19 +209,10 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=photo-api --targetProject=ph
 
 ### 最終的な AWS アーキテクチャ
 
-`cdk synth` の結果（Application スタック 108 リソース + WAF 用スタック）から起こしています。
+`cdk synth` の結果（Application スタック 108 リソース + WAF 用スタック）と `application-stack.ts` から起こした構成図です。
 
-```mermaid
-flowchart LR
-    User((User)) --> WAF1[WAF] --> CF[CloudFront] --> S3W[(S3 SPA)]
-    User -- Hosted UI --> Cognito[Cognito User Pool<br/>MFA 必須]
-    User -- JWT --> WAF2[WAF] --> APIGW[API Gateway REST<br/>Cognito Authorizer]
-    APIGW --> L[Lambda x4<br/>createUploadUrl / confirmUpload / list / delete]
-    L --> DDB[(DynamoDB<br/>pk=photoId<br/>GSI feed / owner)]
-    L -- presign / Head / Delete --> S3P[(S3 PhotoBucket<br/>KMS, 非公開)]
-    User -- 署名付き PUT / GET --> S3P
-    AppConfig[AppConfig] -.-> L
-```
+![Case 1 のアーキテクチャ。CloudFront + S3 の SPA、Cognito、API Gateway REST + Lambda ×4、DynamoDB、手書きの S3 PhotoBucket。画像は署名付き URL でブラウザから S3 に直接 PUT / GET する](/images/nx-plugin-user-story/case1-architecture.png)
+*Case 1：画像共有アプリ。グレーの枠は Generator が生成した部分（枠の下に Generator 名）、オレンジの破線枠は Generator がなく手書きした部分、オレンジの矢印は要件に直結する経路です。以降の図も同じ凡例です。*
 
 AWS に慣れた人が思い浮かべる S3 / CloudFront / Cognito / Lambda / API Gateway / DynamoDB はすべて出てきましたが、**画像配信には CloudFront を使っていません**。一覧 API が写真ごとに S3 の署名付き GET URL を返す方式です。
 
@@ -333,22 +324,10 @@ pnpm nx g @aws/nx-plugin:ts#infra --name=infra
 
 ### 最終的な AWS アーキテクチャ
 
-`cdk synth` の出力（Application スタック 118 リソース + WAF 用 us-east-1 スタック）から起こした構成図です。
+`cdk synth` の出力（Application スタック 118 リソース + WAF 用 us-east-1 スタック）と `application-stack.ts` から起こした構成図です。
 
-```mermaid
-flowchart LR
-    User((User)) --> WAF1[WAF] --> CF[CloudFront] --> S3[(S3 SPA)]
-    User -- Hosted UI --> Cognito[Cognito User Pool]
-    User -- JWT --> WAF2[WAF] --> APIGW[API Gateway REST<br/>Cognito Authorizer]
-    APIGW --> L1[Lambda x5<br/>tRPC procedures]
-    L1 --> DDB[(DynamoDB<br/>pk=userId sk=taskId<br/>GSI byDue / byReminder)]
-    EB[EventBridge Rule<br/>rate 5 min] --> L2[Lambda<br/>send-due-reminders]
-    L2 -- 条件付き更新 pending→sent --> DDB
-    L2 --> SES[Amazon SES]
-    SES --> Mail[ユーザーのメール]
-    AppConfig[AppConfig<br/>runtime config] -.-> L1
-    AppConfig -.-> L2
-```
+![Case 2 のアーキテクチャ。CloudFront + S3 の SPA、Cognito、API Gateway REST + Lambda ×5、DynamoDB（pk=userId）、EventBridge Rule（5 分ごと）→ Lambda → SES → メール。リマインダー Lambda は pending→sent を条件付き更新](/images/nx-plugin-user-story/case2-architecture.png)
+*Case 2：通知付きタスク管理。EventBridge Rule と SES は Generator がなく `application-stack.ts` に手書きされた部分です。*
 
 Generator で生まれたのは、この図の CloudFront / S3 / WAF / Cognito / API Gateway / Lambda（tRPC）/ DynamoDB / AppConfig の部分です。EventBridge Rule、SES EmailIdentity、リマインダー Lambda への権限付与と環境変数、CORS 制限は `application-stack.ts` に Claude Code が手書きしていました。
 
@@ -459,24 +438,10 @@ S3 バケット、SQS + DLQ、S3 イベント通知、Lambda の SQS イベン�
 
 ### 最終的な AWS アーキテクチャ
 
-`cdk synth` の結果（Application スタック 130 リソース + WAF 用スタック）から起こしています。
+`cdk synth` の結果（Application スタック 130 リソース + WAF 用スタック）と `application-stack.ts` から起こした構成図です。
 
-```mermaid
-flowchart LR
-    User((User)) --> WAF1[WAF] --> CF[CloudFront] --> S3W[(S3 SPA)]
-    User -- Hosted UI --> Cognito[Cognito User Pool<br/>+ Identity Pool]
-    User -- SigV4 --> WAF2[WAF] --> APIGW[API Gateway REST<br/>IAM auth]
-    APIGW --> L1[Lambda x5<br/>jobs.create / markUploaded / list / get / getResult]
-    L1 --> DDB[(DynamoDB Jobs<br/>status, owner)]
-    L1 -- presign PUT --> S3D[(S3 DataBucket<br/>uploads/ results/)]
-    User -- 署名付き PUT --> S3D
-    S3D -- ObjectCreated uploads/…/input.csv --> SQS[SQS CsvJobsQueue]
-    SQS --> L2[Lambda csv-processor<br/>15min / 2GB<br/>stream parse]
-    SQS -. 3回失敗 .-> DLQ[SQS DLQ]
-    L2 --> DDB
-    L2 -- results/jobId/result.json --> S3D
-    L1 -- getResult --> S3D
-```
+![Case 3 のアーキテクチャ。CloudFront + S3 の SPA、Cognito、API Gateway REST（IAM 認証）+ Lambda ×5、DynamoDB Jobs、S3 DataBucket → SQS（+DLQ）→ Lambda csv-processor。ブラウザは署名付き URL で S3 に直接 PUT](/images/nx-plugin-user-story/case3-architecture.png)
+*Case 3：CSV 分析サービス。S3 バケット、SQS、DLQ、イベント通知、イベントソースマッピングが手書き部分です。*
 
 ### AI がうまく判断したところ
 
@@ -594,19 +559,10 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=ticket-api --targetProject=t
 
 ### 最終的な AWS アーキテクチャ
 
-`cdk synth` の結果（Application スタック 146 リソース + WAF 用スタック）から起こしています。
+`cdk synth` の結果（Application スタック 146 リソース + WAF 用スタック）と `application-stack.ts` から起こした構成図です。
 
-```mermaid
-flowchart LR
-    User((User)) --> WAF1[WAF] --> CF[CloudFront] --> S3W[(S3 SPA)]
-    User -- Hosted UI --> Cognito[Cognito User Pool<br/>admin group]
-    User -- JWT --> WAF2[WAF 管理ルール<br/>+ IP レート制限] --> APIGW[API Gateway REST<br/>Cognito Authorizer<br/>throttle 10000/5000]
-    APIGW --> L[Lambda x9<br/>events.list / seats.list / orders.hold / confirm / cancel など]
-    L -- TransactWriteItems<br/>条件付き更新 --> DDB[(DynamoDB 単一テーブル<br/>event / seat / order<br/>1 座席 1 パーティション<br/>GSI シャーディング x8)]
-    AppConfig[AppConfig] -.-> L
-```
-
-サービスの種類だけ見れば Case 1 より少ない、非常にシンプルな構成です。
+![Case 4 のアーキテクチャ。CloudFront + S3 の SPA、Cognito（admin グループ）、WAF（IP レート制限追加）+ API Gateway REST + Lambda ×9、DynamoDB 単一テーブル。Lambda から DynamoDB へは TransactWriteItems と条件式で二重販売を防止](/images/nx-plugin-user-story/case4-architecture.png)
+*Case 4：チケット販売。使ったサービスの種類は Case 1 より少なく、難しさはデータモデルと条件式（手書き）に集中しています。*
 
 ### AI がうまく判断したところ
 
