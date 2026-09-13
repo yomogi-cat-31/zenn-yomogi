@@ -1,5 +1,5 @@
 ---
-title: "ユーザーストーリーだけ渡したら、AIはAWSアーキテクチャをどこまで設計してくれるのか？"
+title: "（aws/nx-plugin）ユーザーストーリーだけ渡したら、AIはAWSアーキテクチャをどこまで設計してくれるのか？"
 emoji: "🏗️"
 type: "tech"
 topics: ["aws", "claudecode", "nx", "cdk", "ai"]
@@ -8,7 +8,7 @@ published: false
 
 ## はじめに
 
-2026年9月、AWS の Nx 向け Generator 集 `@aws/nx-plugin` が v1.0.0 としてリリースされました。README の冒頭には「Build full-stack AWS apps in minutes」とあり、「AI アシスタントにプロンプトを渡せば、必要な Generator を選んで組み立ててくれる」とも書かれています。
+2026年9月、AWS の Nx 向け Generator 集 `@aws/nx-plugin` が v1.0.0 としてリリースされました。README の冒頭には「Build full-stack AWS apps in minutes」とあり、[公式ドキュメント](https://awslabs.github.io/nx-plugin-for-aws/jp/)には、「プラグインにはMCPサーバーが付属しているため、AIアシスタントがプロジェクトをスキャフォールドして接続できます。」と書かれています。
 
 部品がこれだけ揃っていて、AI がその部品を調べて呼べるなら、ユーザーストーリーだけを渡したら、どこまで自力でアーキテクチャを決めて実装まで持っていけるのか気になったので、検証してみたという趣旨の内容になります。
 
@@ -34,9 +34,9 @@ Claude Code に `@aws/nx-plugin` を使える状態で、難易度の異なる 4
 | `connection` | プロジェクト同士の接続（Website → API、API → DynamoDB など）。クライアント生成と IAM 権限付与をまとめて行う |
 | `ts#agent` / `py#agent` / `ts#mcp-server` / `agentcore-*` | Strands Agent、MCP サーバ、Bedrock AgentCore 関連 |
 
- **SQS、EventBridge、SES、SNS、Step Functions、S3（単体）、ECS の Generator は存在しません。** Generatorが存在しないリソースはCDK を手書きする必要があります。この点は後の Case 2〜4 で効いてきます。
+ **SQS、EventBridge、SES、SNS、Step Functions、S3（単体）、ECS の Generator は存在しません。** Generatorが存在しないリソースはCDK を手書きする必要があります。
 
-また、AI エージェント向けの MCP サーバが同梱されており、`@aws/create-nx-workspace` でワークスペースを作ると、`nx-plugin-for-aws` という MCP サーバが自動登録され、次の7ツールが使えるようになります。
+また、冒頭でも触れた通り、AI エージェント向けの MCP サーバが同梱されており、`@aws/create-nx-workspace` でワークスペースを作ると、`nx-plugin-for-aws` という MCP サーバが自動登録され、次の7ツールが使えるようになります。
 
 - `general-guidance`：Nx とプラグインの使い方、
 - `best-practices`：セキュリティやランタイム設定に関する横断的なガイド
@@ -44,21 +44,18 @@ Claude Code に `@aws/nx-plugin` を使える状態で、難易度の異なる 4
 - `generator-guide`：特定 Generator の詳細ガイド。`options` を渡すと、その組み合わせに関係する部分だけに絞って返してくれる
 - `create-workspace-command` / `add-to-existing-project` / `upgrade-workspace`：ワークスペースの作成・導入・更新
 
-つまり、コーディングエージェントから見ると「どんな部品があり、どう呼べばよいか」を実行時に問い合わせられる状態になっています。
-
 ### 前提
 
 **@aws/nx-plugin 自身はアーキテクチャを考えません。** 
 
-`ts#api` を実行すれば API Gateway + Lambda が出てきますし、`ts#dynamodb` を実行すれば DynamoDB が出てきます。しかし、
 - この要件に DynamoDB が適切か
 - 非同期処理にキューを挟むべきか
 
-といった判断は、Generator の外側にあります。プラグインの公式ドキュメント（security ページ）にも、次のような趣旨のことが明記されています。
+といった判断は、Generator の外側にあります。プラグインの[公式ドキュメント（Security ページ）](https://awslabs.github.io/nx-plugin-for-aws/en/guides/security/)にも、次のように明記されています。
 
-> The scope of the plugin is limited to its generators. The plugin has no knowledge of your application's business logic, data classification, threat model, or regulatory obligations.
+> The scope of the plugin is limited to its generators. The plugin has no knowledge of your application's business logic, data classification, threat model, or regulatory obligations, and cannot make decisions that depend on them.
 >
-> （訳）プラグインの守備範囲は Generator に限られます。プラグインはあなたのアプリケーションのビジネスロジック、データの機密区分、脅威モデル、規制上の義務については何も知りません。
+> （訳）プラグインの守備範囲は Generator に限られます。プラグインはあなたのアプリケーションのビジネスロジック、データの機密区分、脅威モデル、規制上の義務については何も知らず、それらに依存する判断はできません。
 
 今回の検証は、この「外側の判断」をコーディングエージェントがどこまで担えるかを見るものです。
 
