@@ -201,7 +201,7 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=photo-api --targetProject=ph
 | 「共有」= ログイン済みユーザー全員に公開 | 特定ユーザー宛ての共有や公開範囲設定は不要 | 宛先指定やリンク共有が要件なら、共有先を持つデータモデルと認可ロジックが必要 |
 | 画像配信は S3 の署名付き GET URL（CloudFront を通さない） | 小規模で、URL の転送や CDN キャッシュは問題にならない | 規模が出る、URL の転送を防ぎたいなら CloudFront + OAC + 署名付き Cookie |
 | MFA 必須（Generator 既定のまま） | セキュリティ既定を優先し、体験は後で調整 | カジュアルな写真共有で離脱を避けるなら任意化。組織の方針で決める |
-| 1 枚 10 MiB まで、JPEG / PNG / GIF / WebP / HEIC | スマートフォンの写真程度 | RAW や動画なら上限と種別を見直す。HEIC はブラウザで表示できない場合がある |
+| 1 枚 10 MiB まで、JPEG / PNG / GIF / WebP / HEIC。この前提から署名付き URL で S3 に直接転送する構成を選択 | 一眼レフ級の写真も原寸で保存する | 上限を小さくする（クライアントで圧縮して数 MB 以下にするなど）なら API Gateway 経由でもよく、署名付き URL の仕組み自体が不要になる。RAW や動画なら逆に上限と種別を広げる。HEIC はブラウザで表示できない場合がある |
 | 署名付き URL の期限は PUT 5 分・GET 1 時間 | 期限内の URL 転送は許容 | 厳密な閲覧制御が要るなら短縮、または CloudFront の署名付き Cookie |
 | アップロード確定は同期の `confirmUpload`（S3 イベント方式は見送り） | タイトル・説明を確定してから登録したい | クライアントが落ちても登録したいなら S3 イベント → Lambda 方式 |
 | 写真バケットとテーブルは `RETAIN` | 誤削除防止を優先 | 検証環境を頻繁に作り直すなら `DESTROY` |
@@ -209,7 +209,6 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=photo-api --targetProject=ph
 
 ### 要件によらず妥当だったインフラ設計
 
-- **画像を API Gateway / Lambda に通さない**：API Gateway の 10 MB 制限と Lambda の実行時間・コストは要件によらず効く制約で、署名付き URL での直接転送はどの読み方でも正しい選択です。
 - **S3 キーに所有者を埋め込む**：`photos/<ownerSub>/<photoId>.<ext>` を呼び出しユーザーの `sub` から組み立てるため、他人のアップロードを自分の写真として登録できません。
 - **操作ごとの最小権限**：`createUploadUrl` には PutObject だけ、`list` には Read だけと、Lambda 単位で S3 / DynamoDB の権限を分けています。`integrationPattern=isolated` を選んだ理由もこれでした。
 
