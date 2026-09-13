@@ -8,12 +8,11 @@ published: false
 
 ## はじめに
 
-2026年9月、AWS の Nx 向け Generator 集 `@aws/nx-plugin`（Nx Plugin for AWS）が v1.0.0 としてリリースされました。README の冒頭には「Build full-stack AWS apps in minutes」とあり、Reactや「AI アシスタントにプロンプトを渡せば、必要な Generator を選んで組み立ててくれる」とも書かれています。
+2026年9月、AWS の Nx 向け Generator 集 `@aws/nx-plugin`（Nx Plugin for AWS）が v1.0.0 としてリリースされました。README の冒頭には「Build full-stack AWS apps in minutes」とあり、「AI アシスタントにプロンプトを渡せば、必要な Generator を選んで組み立ててくれる」とも書かれています。
 
 部品がこれだけ揃っていて、AI がその部品を調べて呼べるなら、ユーザーストーリーだけを渡したら、どこまで自力でアーキテクチャを決めて実装まで持っていけるのか気になったので、検証してみたという趣旨の内容になります。
 
-そこで、Claude Code に `@aws/nx-plugin` を使える状態で、難易度の異なる 4 つのユーザーストーリーだけを渡し、
-何を選び、何を選ばず、どこで人間の判断が必要になったかを記録してみました。この記事はその検証記録です。
+Claude Code に `@aws/nx-plugin` を使える状態で、難易度の異なる 4 つのユーザーストーリーだけを渡し、何を選び、何を選ばず、どこで人間の判断が必要になったかを記録してみました。
 
 ## @aws/nx-plugin とは
 
@@ -44,7 +43,7 @@ published: false
 - `generator-guide`：特定 Generator の詳細ガイド。`options` を渡すと、その組み合わせに関係する部分だけに絞って返してくれる
 - `create-workspace-command` / `add-to-existing-project` / `upgrade-workspace`：ワークスペースの作成・導入・更新
 
-つまり、Claude Code から見ると「どんな部品があり、どう呼べばよいか」を実行時に問い合わせられる状態になっています。
+つまり、コーディングエージェントから見ると「どんな部品があり、どう呼べばよいか」を実行時に問い合わせられる状態になっています。
 
 ### 役割分担をはっきりさせておく
 
@@ -53,6 +52,8 @@ published: false
 `ts#api` を実行すれば API Gateway + Lambda が出てきますし、`ts#dynamodb` を実行すれば DynamoDB が出てきます。しかし「この要件に DynamoDB が適切か」「非同期処理にキューを挟むべきか」「二重販売を防ぐには条件付き書き込みが要るか」といった判断は、Generator の外側にあります。プラグインの公式ドキュメント（security ページ）にも、次のような趣旨のことが明記されています。
 
 > The scope of the plugin is limited to its generators. The plugin has no knowledge of your application's business logic, data classification, threat model, or regulatory obligations. (中略) Authentication is configured, but authorization is not.
+>
+> （訳）プラグインの守備範囲は Generator に限られます。プラグインはあなたのアプリケーションのビジネスロジック、データの機密区分、脅威モデル、規制上の義務については何も知りません。（中略）認証は構成されますが、認可は構成されません。
 
 今回の検証は、この「外側の判断」を Claude Code がどこまで担えるかを見るものです。
 
