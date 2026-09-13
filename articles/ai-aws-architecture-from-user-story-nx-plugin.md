@@ -186,7 +186,7 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=photo-api --targetProject=ph
 ### 最終的な AWS アーキテクチャ
 
 ![Case 1 のアーキテクチャ。CloudFront + S3 の SPA、Cognito、API Gateway REST + Lambda ×4、DynamoDB、手書きの S3 PhotoBucket。画像は署名付き URL でブラウザから S3 に直接 PUT / GET する](/images/nx-plugin-user-story/case1-architecture.png)
-*Case 1：画像共有アプリ。グレーの枠は Generator が生成した部分（枠の下に Generator 名）、オレンジの破線枠は Generator がなく手書きした部分、オレンジの矢印は要件に直結する経路です。*
+*Case 1：画像共有アプリ。各枠の下に、その部分を生成した Generator 名、または手書き CDK であることを示しています。凡例は図の下部にあります。*
 
 個人的にはCloudFrontが入るかなと思っていたのですが、**画像配信には CloudFront を使っていません**。一覧 API が写真ごとに S3 の署名付き GET URL を返す方式です。
 
@@ -310,7 +310,7 @@ S3 バケット、SQS + DLQ、S3 イベント通知、Lambda の SQS イベン�
 
 ### 最終的な AWS アーキテクチャ
 
-![Case 2 のアーキテクチャ。CloudFront + S3 の SPA、Cognito、API Gateway REST（IAM 認証）+ Lambda ×5、DynamoDB Jobs、S3 DataBucket → SQS（+DLQ）→ Lambda csv-processor。ブラウザは署名付き URL で S3 に直接 PUT](/images/nx-plugin-user-story/case3-architecture.png)
+![Case 2 のアーキテクチャ。CloudFront + S3 の SPA、Cognito、API Gateway REST（IAM 認証）+ Lambda ×5、DynamoDB Jobs、S3 DataBucket → SQS（+DLQ）→ Lambda csv-processor。ブラウザは署名付き URL で S3 に直接 PUT](/images/nx-plugin-user-story/case2-architecture.png)
 *Case 2：CSV 分析サービス。S3 バケット、SQS、DLQ、イベント通知、イベントソースマッピングが手書き部分です。*
 
 ### AI が置いた前提（人間が確認すべきポイント）
@@ -430,7 +430,7 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=ticket-api --targetProject=t
 
 ### 最終的な AWS アーキテクチャ
 
-![Case 3 のアーキテクチャ。CloudFront + S3 の SPA、Cognito（admin グループ）、WAF（IP レート制限追加）+ API Gateway REST + Lambda ×9、DynamoDB 単一テーブル。Lambda から DynamoDB へは TransactWriteItems と条件式で二重販売を防止](/images/nx-plugin-user-story/case4-architecture.png)
+![Case 3 のアーキテクチャ。CloudFront + S3 の SPA、Cognito（admin グループ）、WAF（IP レート制限追加）+ API Gateway REST + Lambda ×9、DynamoDB 単一テーブル。Lambda から DynamoDB へは TransactWriteItems と条件式で二重販売を防止](/images/nx-plugin-user-story/case3-architecture.png)
 *Case 3：チケット販売。使ったサービスの種類は Case 1 より少なく、難しさはデータモデルと条件式（手書き）に集中しています。*
 
 ### AI が置いた前提（人間が確認すべきポイント）
