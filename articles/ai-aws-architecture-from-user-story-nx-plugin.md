@@ -8,7 +8,7 @@ published: false
 
 ## はじめに
 
-2026年9月、AWS の Nx 向け Generator 集 `@aws/nx-plugin`（Nx Plugin for AWS）が v1.0.0 としてリリースされました。README の冒頭には「Build full-stack AWS apps in minutes」とあり、「AI アシスタントにプロンプトを渡せば、必要な Generator を選んで組み立ててくれる」とも書かれています。
+2026年9月、AWS の Nx 向け Generator 集 `@aws/nx-plugin` が v1.0.0 としてリリースされました。README の冒頭には「Build full-stack AWS apps in minutes」とあり、「AI アシスタントにプロンプトを渡せば、必要な Generator を選んで組み立ててくれる」とも書かれています。
 
 部品がこれだけ揃っていて、AI がその部品を調べて呼べるなら、ユーザーストーリーだけを渡したら、どこまで自力でアーキテクチャを決めて実装まで持っていけるのか気になったので、検証してみたという趣旨の内容になります。
 
@@ -34,64 +34,33 @@ Claude Code に `@aws/nx-plugin` を使える状態で、難易度の異なる 4
 | `connection` | プロジェクト同士の接続（Website → API、API → DynamoDB など）。クライアント生成と IAM 権限付与をまとめて行う |
 | `ts#agent` / `py#agent` / `ts#mcp-server` / `agentcore-*` | Strands Agent、MCP サーバ、Bedrock AgentCore 関連 |
 
-重要なのは、この一覧に **SQS、EventBridge、SES、SNS、Step Functions、S3（単体）、ECS の Generator は存在しない** ことです。`ts#lambda-function` がイベントソースの「受け口」を型付きで用意してくれますが、キューやスケジューラといったイベントの「送り元」は、Generator の外側で CDK を手書きする必要があります。この点は後の Case 2〜4 で効いてきます。
+ **SQS、EventBridge、SES、SNS、Step Functions、S3（単体）、ECS の Generator は存在しません。** Generatorが存在しないリソースはCDK を手書きする必要があります。この点は後の Case 2〜4 で効いてきます。
 
-もう一つの特徴は、AI エージェント向けの MCP サーバが同梱されていることです。`@aws/create-nx-workspace` でワークスペースを作ると、`.mcp.json`（Claude Code 用）や `.cursor/mcp.json`、`.kiro/settings/mcp.json` などに `nx-plugin-for-aws` という MCP サーバが自動登録され、次の7ツールが使えるようになります。
+また、AI エージェント向けの MCP サーバが同梱されており、`@aws/create-nx-workspace` でワークスペースを作ると、`nx-plugin-for-aws` という MCP サーバが自動登録され、次の7ツールが使えるようになります。
 
-- `general-guidance` / `best-practices`：Nx とプラグインの使い方、セキュリティやランタイム設定に関する横断的なガイド
+- `general-guidance`：Nx とプラグインの使い方、
+- `best-practices`：セキュリティやランタイム設定に関する横断的なガイド
 - `list-generators`：Generator の一覧と、それぞれの実行コマンド・オプション
 - `generator-guide`：特定 Generator の詳細ガイド。`options` を渡すと、その組み合わせに関係する部分だけに絞って返してくれる
 - `create-workspace-command` / `add-to-existing-project` / `upgrade-workspace`：ワークスペースの作成・導入・更新
 
 つまり、コーディングエージェントから見ると「どんな部品があり、どう呼べばよいか」を実行時に問い合わせられる状態になっています。
 
-### 役割分担をはっきりさせておく
+### 前提
 
-ここで強調しておきたいのは、**@aws/nx-plugin 自身はアーキテクチャを考えない** ということです。
+**@aws/nx-plugin 自身はアーキテクチャを考えません。** 
 
-`ts#api` を実行すれば API Gateway + Lambda が出てきますし、`ts#dynamodb` を実行すれば DynamoDB が出てきます。しかし「この要件に DynamoDB が適切か」「非同期処理にキューを挟むべきか」「二重販売を防ぐには条件付き書き込みが要るか」といった判断は、Generator の外側にあります。プラグインの公式ドキュメント（security ページ）にも、次のような趣旨のことが明記されています。
+`ts#api` を実行すれば API Gateway + Lambda が出てきますし、`ts#dynamodb` を実行すれば DynamoDB が出てきます。しかし、
+- この要件に DynamoDB が適切か
+- 非同期処理にキューを挟むべきか
 
-> The scope of the plugin is limited to its generators. The plugin has no knowledge of your application's business logic, data classification, threat model, or regulatory obligations. (中略) Authentication is configured, but authorization is not.
+といった判断は、Generator の外側にあります。プラグインの公式ドキュメント（security ページ）にも、次のような趣旨のことが明記されています。
+
+> The scope of the plugin is limited to its generators. The plugin has no knowledge of your application's business logic, data classification, threat model, or regulatory obligations.
 >
-> （訳）プラグインの守備範囲は Generator に限られます。プラグインはあなたのアプリケーションのビジネスロジック、データの機密区分、脅威モデル、規制上の義務については何も知りません。（中略）認証は構成されますが、認可は構成されません。
+> （訳）プラグインの守備範囲は Generator に限られます。プラグインはあなたのアプリケーションのビジネスロジック、データの機密区分、脅威モデル、規制上の義務については何も知りません。
 
-今回の検証は、この「外側の判断」を Claude Code がどこまで担えるかを見るものです。
-
-- **アーキテクチャ判断をするのは Claude Code**
-- **実装手段（定型化されたアプリ＋IaC）を提供するのが @aws/nx-plugin**
-
-という役割分担を前提に読んでください。
-
-## 今回やってみたいこと
-
-通常、AWS 上にアプリケーションを作る場合は、
-
-```
-ユーザー要件
-  ↓ 人間
-アプリケーション設計
-  ↓ 人間
-AWSアーキテクチャ設計
-  ↓ 人間
-IaC
-  ↓ 人間（最近はAI）
-実装
-```
-
-という流れで、人間がかなりの部分を設計します。
-
-一方、Claude Code のようなエージェントと @aws/nx-plugin を組み合わせると、
-
-```
-ユーザーストーリー
-  ↓ Claude Code が必要なコンポーネントを判断
-  ↓ Claude Code が必要なAWSサービスを判断
-  ↓ Claude Code が @aws/nx-plugin の適切な Generator を選択
-  ↓ Generator がアプリ＋IaC を生成、足りない部分を Claude Code が手書き
-アプリケーション + インフラ
-```
-
-というところまで持っていけるのではないか、というのが今回の検証テーマです。
+今回の検証は、この「外側の判断」をコーディングエージェントがどこまで担えるかを見るものです。
 
 ## 検証ルール
 
@@ -114,8 +83,6 @@ AWS上で動作するアプリケーションとして構築してください�
 - 最後に `DESIGN.md`（解釈した要件、選んだサービスと理由、使った／使わなかった Generator、手書きした部分、人間のレビューが必要な点）と `WORKLOG.md`（実行コマンドの記録）を書くこと
 - 途中で質問はできないので、自分で判断して理由を残すこと
 
-「DynamoDB を使え」「Lambda を使え」「Cognito を使え」といった指示は一切含めていません。
-
 ### 検証環境
 
 | 項目 | 内容 |
@@ -125,15 +92,8 @@ AWS上で動作するアプリケーションとして構築してください�
 | @aws/nx-plugin | 1.0.0（2026-09-07 リリース） |
 | Nx | 23.2.0 |
 | パッケージマネージャ / IaC | pnpm 10 / AWS CDK（aws-cdk-lib 2.268.0） |
-| 実行形態 | Claude Code のサブエージェント（Agent ツール）として、ケースごとに独立した空ワークスペースで並列実行 |
 
-一点だけ環境上の注意があります。サブエージェントは親セッションの MCP 設定を引き継がないため、ワークスペースの `.mcp.json` に登録された `nx-plugin-for-aws` MCP サーバを直接は呼べません。そこで、同じ MCP サーバを stdio 経由で叩く薄い CLI ラッパー（`node nxmcp.mjs <tool-name> '<json>'`）を用意し、「使うかどうかはあなたの判断に任せます」と伝えました。ラッパーは呼び出し履歴をファイルに残すので、「AIが Generator を調べた過程」はここから追えます。
-
-また、ケースごとにワークスペースは完全に別で、Claude Code は他のケースの結果を知りません。4ケースは同時に走らせています。
-
-:::message
-検証途中でアカウントのセッション上限に達し、4エージェントとも約2時間半停止しました。上限解除後にそれぞれのコンテキストを保ったまま再開させています。この中断は Generator 実行後・アプリ実装中に起きており、アーキテクチャ選択には影響していません。
-:::
+ケースごとにワークスペースは完全に別で、Claude Code は他のケースの結果を知りません。
 
 ## Case 1：画像共有アプリ
 
@@ -154,8 +114,6 @@ DESIGN.md の要件表から抜粋します。
 - 「他のユーザーと共有」を **ログイン済みユーザー全員に公開される** と解釈。特定ユーザー宛て共有、リンク共有、公開範囲設定はスコープ外と明記
 - 要件にない「自分の写真は削除できる」を追加し、投稿者本人のみ許可
 - 非機能として自分で設定：1 枚 10 MiB まで、JPEG/PNG/GIF/WebP/HEIC、閲覧も署名付き URL（1 時間）経由のみ、Lambda は操作ごとに分離して最小権限、写真バケットとテーブルは `RETAIN`
-
-「共有」の解釈をどう置いたかを明示的に書いていた点は良かったと思います。ここは人によって「リンクを知っている人に公開」とも「特定ユーザーに共有」とも読めるところです。
 
 ### 選択した AWS サービス
 
@@ -210,16 +168,14 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=photo-api --targetProject=ph
 
 ### 最終的な AWS アーキテクチャ
 
-`cdk synth` の結果（Application スタック 108 リソース + WAF 用スタック）と `application-stack.ts` から起こした構成図です。
-
 ![Case 1 のアーキテクチャ。CloudFront + S3 の SPA、Cognito、API Gateway REST + Lambda ×4、DynamoDB、手書きの S3 PhotoBucket。画像は署名付き URL でブラウザから S3 に直接 PUT / GET する](/images/nx-plugin-user-story/case1-architecture.png)
 *Case 1：画像共有アプリ。グレーの枠は Generator が生成した部分（枠の下に Generator 名）、オレンジの破線枠は Generator がなく手書きした部分、オレンジの矢印は要件に直結する経路です。以降の図も同じ凡例です。*
 
-AWS に慣れた人が思い浮かべる S3 / CloudFront / Cognito / Lambda / API Gateway / DynamoDB はすべて出てきましたが、**画像配信には CloudFront を使っていません**。一覧 API が写真ごとに S3 の署名付き GET URL を返す方式です。
+特徴的なのが、**画像配信には CloudFront を使っていません**。一覧 API が写真ごとに S3 の署名付き GET URL を返す方式です。
 
 ### AI がうまく判断したところ
 
-- **画像を API に通さない**：API Gateway の 10 MB 制限と Lambda のコストを理由に、署名付き URL で S3 直接アップロードにしていました。要件には書いていない、しかし実務では最初に決める設計判断です。
+- **画像を API に通さない**：API Gateway の 10 MB 制限と Lambda のコストを理由に、署名付き URL で S3 直接アップロードにしていました。
 - **アップロード確定の 3 段階検証**：クライアント側のサイズ・種別チェック、API 入力スキーマ、`confirmUpload` での `HeadObject`（実際の Content-Type とサイズ）の 3 段階で検証し、不正なら S3 から削除して拒否しています。
 - **S3 キーに所有者を埋め込む**：キーを `photos/<ownerSub>/<photoId>.<ext>` にし、呼び出しユーザーの `sub` から組み立てるため、他人のアップロードを自分の写真として登録できない構造にしていました。
 - **操作ごとの最小権限**：`createUploadUrl` には PutObject だけ、`list` には Read だけ、といった具合に Lambda 単位で S3 / DynamoDB の権限を分けています。`integrationPattern=isolated` を選んだ理由もこれでした。
@@ -228,22 +184,12 @@ AWS に慣れた人が思い浮かべる S3 / CloudFront / Cognito / Lambda / AP
 
 ### 微妙だったところ
 
-- **画像配信が S3 署名付き URL 直**：一覧のたびに写真枚数分の署名付き URL を生成し、ブラウザは S3 に直接取りに行きます。署名はローカル計算なので API 呼び出しは増えませんが、キャッシュが効かず、URL を知っていれば期限内は誰でも見られます。写真共有アプリとして規模が出るなら CloudFront + OAC + 署名付き Cookie に寄せるべきで、本人も「規模拡大時の改善候補」と書いています。
+- **画像配信が S3 署名付き URL 直**：一覧のたびに写真枚数分の署名付き URL を生成し、ブラウザは S3 に直接取りに行きます。署名はローカル計算なので API 呼び出しは増えませんが、キャッシュが効かず、URL を知っていれば期限内は誰でも見られます。写真共有アプリとして規模が出るなら CloudFront + OAC + 署名付き Cookie に寄せるべきで、コーディングエージェント自体も「規模拡大時の改善候補」と書いています。
 - **フィード用 GSI のホットパーティション**：全写真を `feed=ALL` の単一パーティションに載せています。個人利用の規模なら問題ありませんが、自分でレビュー項目に挙げている程度で、対策は入れていません。
 - **孤児オブジェクト**：`createUploadUrl` の後に `confirmUpload` が呼ばれないと、S3 に未登録の画像が残ります。ライフサイクルでの掃除は不完全マルチパートと旧バージョンだけで、この孤児には効きません。
 - **削除の一貫性**：S3 削除 → DynamoDB 削除の順で、途中失敗するとレコードだけ残ります。
 - **写真バケットのアクセスログを Checkov 抑制で通した**：Website 側と同等のログ配信を複製するのを避け、`CKV_AWS_18` を理由付きで抑制しています。抑制理由は書いてあるものの、「ビルドを通すために抑制した」側面もあります。
 - **HEIC を許可種別に含めた**：ブラウザ表示できないケースがあるのに許可しています（レビュー項目には挙げていました）。
-
-### 検証結果
-
-| 項目 | 結果 |
-| --- | --- |
-| `pnpm nx run-many --target build --all --skip-nx-cache` | 成功（7 プロジェクト、依存タスク 36）。筆者環境で再実行しても成功 |
-| ユニットテスト | API 17 件、Web 11 件、全件成功（筆者の再実行でも同数）。Web は React 二重化の修正後に通過 |
-| `cdk synth` | 成功。Application スタック 108 リソース（Lambda 9、S3 バケット 3、DynamoDB 1、KMS Key 5、WAF WebACL 2） |
-| Checkov | Passed 257 / Failed 0 / Skipped 8（筆者の再実行でも同数） |
-| デプロイ | 未実施（検証ルール） |
 
 ## Case 2：通知付きタスク管理
 
@@ -267,7 +213,7 @@ DESIGN.md に書かれた要件解釈は、機能要件 6 項目と、自分で�
 - 非機能として自分で追加：通知の二重送信防止、他人のタスクは 403 ではなく 404 で返す（ID の存在を漏らさない）、サーバーレス構成でコストを抑える
 - スコープ外と明示：メール以外の通知チャネル、ユーザーごとのタイムゾーン、繰り返しタスク、共有タスク、ページネーション
 
-要件に書いていない「通知の二重送信」「完了したタスクは通知しない」「期限変更時の追従」まで拾っているのは、実務的な読み方だと思います。
+要件に書いていない「通知の二重送信」「完了したタスクは通知しない」「期限変更時の追従」まで拾っていました。
 
 ### 選択した AWS サービス
 
@@ -304,7 +250,7 @@ generator-guide connection {"sourceType":"ts#trpc-api","targetType":"ts#dynamodb
 
 `list-generators` を見た時点で `ts#lambda-function` のイベントスキーマに `EventBridgeSchema` があることを見つけ、その組み合わせで `generator-guide` を引き直しています。つまり「定期実行 → EventBridge」という判断は、ガイドを読む前に自分で立て、その裏付けとして Generator の対応を確認した、という順序です。
 
-実行した Generator は次の 9 回で、すべて 1 本のシェルコマンドに `&&` で連結して一気に流していました。
+実行した Generator は 9 回でした。
 
 ```bash
 pnpm nx g @aws/nx-plugin:ts#dynamodb --name=task-store
@@ -324,8 +270,6 @@ pnpm nx g @aws/nx-plugin:ts#infra --name=infra
 選ばなかった Generator として DESIGN.md には `ts#rdb`（過剰）、`smithy`（同一モノレポの TS なら tRPC）、`http-lambda`（WAF なし）、`auth=iam`（ユーザー識別が間接的）、`py#*`、`agent`/`mcp` 系、`terraform#project` が理由付きで列挙されていました。
 
 ### 最終的な AWS アーキテクチャ
-
-`cdk synth` の出力（Application スタック 118 リソース + WAF 用 us-east-1 スタック）と `application-stack.ts` から起こした構成図です。
 
 ![Case 2 のアーキテクチャ。CloudFront + S3 の SPA、Cognito、API Gateway REST + Lambda ×5、DynamoDB（pk=userId）、EventBridge Rule（5 分ごと）→ Lambda → SES → メール。リマインダー Lambda は pending→sent を条件付き更新](/images/nx-plugin-user-story/case2-architecture.png)
 *Case 2：通知付きタスク管理。EventBridge Rule と SES は Generator がなく `application-stack.ts` に手書きされた部分です。*
@@ -349,17 +293,6 @@ Generator で生まれたのは、この図の CloudFront / S3 / WAF / Cognito /
 - **タイムゾーン固定**：メール本文は JST 固定。日本語 UI を作ったので整合はしていますが、ユーザーストーリーからは読み取れない仮定です。
 - **一覧が全件取得**：`tasks.list` は `pages: 'all'`。個人のタスク数なら現実的ですが、レビュー項目として自己申告している程度です。
 - **ビルド基盤で 2 回つまずいた**：生成直後の vitest がワークスペース内パッケージを解決できず、`vitest.config` に `tsconfigPaths` を足して回避しています。Generator の出力そのものではなく、`ts#project` で作った手書きプロジェクトから他パッケージを参照したときの設定漏れでした。
-
-### 検証結果
-
-| 項目 | 結果 |
-| --- | --- |
-| `pnpm nx run-many --target build --all --skip-nx-cache` | 成功（lint / compile / test / bundle / synth / checkov）。筆者環境で再実行しても成功 |
-| ユニットテスト | 35 件成功（API 14、store 7、reminder 4、web 4、infra 6）。筆者の再実行でも同数 |
-| `cdk synth` | 成功。Application スタック 118 リソース（Lambda 11、DynamoDB 1 + GSI 2、Events Rule 1、SES EmailIdentity 1、WAF WebACL 2、KMS Key 4 など） |
-| Checkov | Passed 280 / Failed 0 / Skipped 6（筆者の再実行でも同数） |
-| 手書き量 | 74 ファイル、約 2,200 行追加（Generator 生成コミットとの diff）。`packages/common/constructs` は無改変 |
-| デプロイ | 未実施（検証ルール） |
 
 ## Case 3：CSV 分析サービス
 
@@ -439,8 +372,6 @@ S3 バケット、SQS + DLQ、S3 イベント通知、Lambda の SQS イベン�
 
 ### 最終的な AWS アーキテクチャ
 
-`cdk synth` の結果（Application スタック 130 リソース + WAF 用スタック）と `application-stack.ts` から起こした構成図です。
-
 ![Case 3 のアーキテクチャ。CloudFront + S3 の SPA、Cognito、API Gateway REST（IAM 認証）+ Lambda ×5、DynamoDB Jobs、S3 DataBucket → SQS（+DLQ）→ Lambda csv-processor。ブラウザは署名付き URL で S3 に直接 PUT](/images/nx-plugin-user-story/case3-architecture.png)
 *Case 3：CSV 分析サービス。S3 バケット、SQS、DLQ、イベント通知、イベントソースマッピングが手書き部分です。*
 
@@ -462,17 +393,6 @@ S3 バケット、SQS + DLQ、S3 イベント通知、Lambda の SQS イベン�
 - **署名付き URL に Content-Length を含めていない**：申告サイズと実際の PUT サイズが違っても S3 は受け付けます（本人がレビュー項目に記載）。
 - **DLQ の監視がない**：DLQ にメッセージが入ってもアラームは未実装。
 - **コストの固定費**：Cognito Plus（脅威保護）、WAF 3 つ、KMS 5 つ、アクセスログの KMS 暗号化など、Generator 既定のセキュリティ構成で固定費が乗ることを自分で指摘していました。これは Generator 側の設計思想で、要件次第では過剰です。
-
-### 検証結果
-
-| 項目 | 結果 |
-| --- | --- |
-| `pnpm nx run-many -t build --all --skip-nx-cache` | 成功（7 プロジェクト、依存タスク 38）。初回は vitest のパス解決と Checkov 2 件で失敗し、修正後に通過。筆者環境で再実行しても成功 |
-| ユニットテスト | 15 件成功（jobs 3、api 1、csv-processor 9、website 2）。筆者の再実行でも同数。集計ロジックに寄っており、API のテストは 1 件だけ |
-| `cdk synth` | 成功。Application スタック 130 リソース（Lambda 12、SQS Queue 2、S3 バケット 4、DynamoDB 1、EventSourceMapping 1、KMS Key 5、WAF WebACL 2） |
-| Checkov | Passed 334 / Failed 0 / Skipped 8（筆者の再実行でも同数） |
-| `packages/common` への変更 | あり（Lambda Construct に `props` を追加） |
-| デプロイ | 未実施（検証ルール） |
 
 ## Case 4：アクセス集中するチケット販売
 
@@ -560,8 +480,6 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=ticket-api --targetProject=t
 
 ### 最終的な AWS アーキテクチャ
 
-`cdk synth` の結果（Application スタック 146 リソース + WAF 用スタック）と `application-stack.ts` から起こした構成図です。
-
 ![Case 4 のアーキテクチャ。CloudFront + S3 の SPA、Cognito（admin グループ）、WAF（IP レート制限追加）+ API Gateway REST + Lambda ×9、DynamoDB 単一テーブル。Lambda から DynamoDB へは TransactWriteItems と条件式で二重販売を防止](/images/nx-plugin-user-story/case4-architecture.png)
 *Case 4：チケット販売。使ったサービスの種類は Case 1 より少なく、難しさはデータモデルと条件式（手書き）に集中しています。*
 
@@ -583,16 +501,6 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=ticket-api --targetProject=t
 - **統合テストがない**：Docker が使えない環境だったため DynamoDB Local での結合テストは未実施。テストは「発行される ConditionExpression の内容」と「拒否結果の解釈」を DocumentClient のフェイクで検証しているだけで、**DynamoDB 実機で条件式が意図どおり評価されるかは未確認** です。整合性の要がここにあるので、デプロイ後に必ず確認が要ります。
 - **決済がない**：要件解釈として妥当ですが、`confirm` が決済なしで確定する状態です。
 - **MFA 必須のまま**：一般消費者向けチケット販売では離脱要因になるとして `OPTIONAL` への変更をレビュー項目に挙げていますが、既定を変えてはいません。Case 2 とは逆の判断です。
-
-### 検証結果
-
-| 項目 | 結果 |
-| --- | --- |
-| `pnpm nx run-many --target build --all --skip-nx-cache` | 成功（6 プロジェクト、依存タスク 32）。筆者環境で再実行しても成功 |
-| ユニットテスト | 26 件成功（repository 17、router 9）。筆者の再実行でも同数。DynamoDB Local での結合テストは Docker が使えず未実施 |
-| `cdk synth` | 成功。Application スタック 146 リソース（Lambda 14、DynamoDB 1、UserPoolGroup 1、WAF WebACL 2、KMS Key 4） |
-| Checkov | Passed 357 / Failed 0 / Skipped 7（筆者の再実行でも同数） |
-| デプロイ | 未実施（検証ルール） |
 
 ## 4 ケースを比較してみる
 
@@ -620,77 +528,87 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=ticket-api --targetProject=t
 
 ## どこまで AI に任せられそうか
 
-冒頭の 5 つの問いに、検証結果から答えてみます。
+4 ケースの結果を、「AI に任せられた範囲」と「人間が持つべき範囲」に分けて整理します。
 
-### Q1. ユーザーストーリーだけから、AI は AWS サービスを選定できるのか？
+### AI に任せられた範囲
 
-**できました。ただし「王道の選定」に収束します。**
+**Generator の発見と実行**
 
-4 ケースとも、AWS に慣れた人が最初に描く構成（Cognito / API Gateway / Lambda / DynamoDB / S3 / CloudFront）にほぼ一致し、理由も一貫していました。一方で、Aurora や Fargate、Step Functions、ElastiCache といった選択肢は毎回「過剰」「まずはサーバーレスで」と退けられています。要件によっては本当に Aurora が正しいこともあるはずで、そこに踏み込む判断は今回の範囲では見られませんでした。「選定できる」と「最適に選定できる」は別で、後者は要件の背景（規模、チームのスキル、既存資産）を渡さない限り期待できません。
+4 ケースとも `list-generators` → `generator-guide`（オプション付き）→ 実行、という同じ手順を踏み、ガイドに書かれた推奨実装（identity ミドルウェア、`restrictCorsTo`、`grant*`、Runtime Config）をそのまま使っていました。Generator の選択ミスや、存在しない Generator を呼ぼうとした形跡はありません。ここは完全に任せられます。
 
-### Q2. @aws/nx-plugin の Generator を AI が自律的に発見・利用できるのか？
+**定番構成のサービス選定**
 
-**できました。MCP サーバの効果は大きいです。**
+Cognito / API Gateway / Lambda / DynamoDB / S3 / CloudFront という、AWS に慣れた人が最初に描く構成には、サービス名を一切与えなくても到達しました。選定理由も 4 ケースで一貫しています。「REST を選ぶと WAF とアクセスログが付く」「SNS のメール購読は宛先ごとに確認が要る」といった、実際に使うと引っかかる点を根拠にしていた点は信頼できます。
 
-4 ケースとも `list-generators` → `generator-guide`（オプション付き）→ 実行、という同じ手順を踏み、ガイドに書かれた推奨実装（identity ミドルウェア、`restrictCorsTo`、`grant*`、Runtime Config）をそのまま使っていました。Generator の選択ミスや、存在しない Generator を呼ぼうとした形跡はありません。
+**非同期・イベント駆動の要否判断**
 
-ただし、Generator が存在しない領域（SQS、EventBridge、SES、S3 バケット）については、当然ながら CDK の手書きになります。ここは Generator の助けがない分、通常の「AI に CDK を書かせる」品質に戻ります。Case 3 のように Generator の Construct にオプションが足りず、生成物を改変する場面もありました。
+Case 3 では「ブラウザを開いたまま待たなくてよい」から S3 → SQS → Lambda を導き、Step Functions / EventBridge / Fargate との比較まで書いていました。Case 2 では定期実行に EventBridge Rule を選び、Scheduler の単発スケジュール方式との比較も残しています。逆に Case 4 では「キューを入れると非同期 UX になる」として同期 API を選び、Case 1 でも S3 イベント方式を検討したうえで同期 confirm を選んでいます。「入れるか入れないか」を要件から判断できていた点は、期待以上でした。
 
-### Q3. CRUD だけでなく、非同期処理やイベント駆動構成も判断できるのか？
+**認可と整合性をデータモデルに落とす設計**
 
-**できました。しかも「使わない判断」も含めて。**
+「自分のタスクだけ」をパーティションキー（Cognito `sub`）で表現する（Case 2）、通知の二重送信を条件付き更新で防ぐ（Case 2）、二重販売を `TransactWriteItems` と条件式で DB 層で排他する（Case 4）、1 座席 1 パーティションと GSI シャーディングでホットパーティションを避ける（Case 4）。要件に書いていない非機能を読み取り、データモデルの設計として人間のアーキテクトが書くものと遜色ない形にしていました。
 
-Case 3 では「ブラウザを開いたまま待たなくてよい」から S3 → SQS → Lambda を導き、Step Functions / EventBridge / Fargate との比較まで書いていました。Case 2 では定期実行に EventBridge Rule を選び、Scheduler の単発スケジュール方式との比較も残しています。逆に Case 4 では「キューを入れると非同期 UX になる」として同期 API を選び、Case 1 でも S3 イベント方式を検討したうえで同期 confirm を選んでいます。
+**レビュー項目の洗い出し**
 
-イベント駆動を「入れるか入れないか」を要件から判断している点は、期待以上でした。
+SES サンドボックス、Cognito ドメインの一意性、オンデマンドテーブルの初期スループット、Lambda の同時実行上限、WAF レート制限の誤検知など、デプロイ前に必ず引っかかる運用事項を DESIGN.md に自分で書き出していました。「何をレビューすべきか」のリストを作る作業は任せられます。
 
-### Q4. スケーラビリティや整合性などの非機能要件まで読み取れるのか？
+### 人間が持つべき範囲
 
-**読み取れました。ただし、対策は「設計」に偏り、「検証」と「インフラの数値」が弱いです。**
+**要件の解釈そのもの**
 
-Case 4 は「大量アクセス」と「二重販売されない」の 2 語から、トランザクション、条件式、冪等キー、1 座席 1 パーティション、GSI シャーディング、WAF レート制限、監査ログまで展開しました。データモデルの設計としては、人間のアーキテクトが書くものと遜色ありません。
+「共有」とは誰に見せることか（Case 1）、通知はメールでよいか（Case 2）、完了通知は要らないのか（Case 3）、決済はどこで入るか（Case 4）。AI は解釈を明示してくれますが、正解はプロダクト側にあります。
 
-一方で、Lambda の同時実行上限や DynamoDB オンデマンドの初期スループット、API Gateway のスロットリング値といった「数値で決めるインフラ要件」は、既定値のまま「レビュー項目」に回されています。さらに、整合性の要である条件式は DynamoDB 実機では未検証です。**非機能要件を「読む」ことと「満たしたことを確認する」ことの間には、まだ大きな溝があります。**
+**定番から外れる選定**
 
-### Q5. どこから先は人間の AWS アーキテクト / SRE がレビューする必要があるのか？
+Aurora や Fargate、Step Functions、ElastiCache といった選択肢は毎回「過剰」「まずはサーバーレスで」と退けられました。要件によっては本当に Aurora が正しいこともあるはずで、そこに踏み込む判断は今回の範囲では見られませんでした。「選定できる」と「最適に選定できる」は別で、後者は要件の背景（規模、チームのスキル、既存資産）を人間が渡さない限り期待できません。
 
-今回の結果から、少なくとも次の 5 つは人間が持つべき領域だと考えます。
+**セキュリティ既定を緩める判断**
 
-1. **要件の解釈そのもの**：「共有」とは誰に見せることか（Case 1）、通知はメールでよいか（Case 2）、完了通知は要らないのか（Case 3）、決済はどこで入るか（Case 4）。AI は解釈を明示してくれますが、正解はプロダクト側にあります。
-2. **セキュリティ既定を緩める判断**：MFA、セルフサインアップ、署名付き URL の有効期限。AI はもっともらしい理由を付けて緩めることがあります（Case 2）。
-3. **数値の入る非機能要件**：スロットリング、同時実行数、キューの可視性タイムアウト、保持期間、コスト。既定値で置かれている箇所を一つずつ確認する必要があります。
-4. **実機での検証**：今回はデプロイしていないので、Cognito → API → S3 直接 PUT の CORS、SES サンドボックス、S3 → SQS の KMS 権限、DynamoDB の条件式など、「デプロイして初めて分かる」項目はすべて未検証です。
-5. **Generator 既定のコスト**：Cognito Plus、WAF × 3、KMS × 4〜5、アクセスログの KMS 暗号化は、小さなアプリには固定費として重いです。Case 3 の AI 自身がこれを指摘していました。
+MFA、セルフサインアップ、署名付き URL の有効期限。AI はもっともらしい理由を付けて緩めることがあります（Case 2 の MFA 任意化）。同じモデル・同じプロンプト形式でも Case 1 と Case 4 は既定を守っており、この判断はぶれます。緩める判断は人間が持つべきです。
 
-### 「Generator が存在すること」と「適切なアーキテクチャを選べること」は別問題
+**数値の入る非機能要件**
 
-今回いちばん強く感じたのはこの点です。
+Lambda の同時実行上限、DynamoDB オンデマンドの初期スループット、API Gateway のスロットリング値、キューの可視性タイムアウト、保持期間。「数値で決めるインフラ要件」は既定値のまま「レビュー項目」に回されています。既定値で置かれている箇所を一つずつ確認する必要があります。
 
-Case 1 と Case 4 は、実行した Generator の組み合わせが完全に同じでした。しかし出来上がったものは、片方は写真ギャラリーで、もう片方は座席の排他制御を持つ販売システムです。難しさの本体は Generator の外側にあり、Generator は「その周りの定型部分を、セキュアな既定値付きで用意する」役割に徹しています。
+**実機での検証**
 
-逆に言えば、Generator が揃っていても、それを組み合わせて要件を満たす判断は誰かがしなければならず、今回はそれを Claude Code が担いました。プラグインのドキュメントが「Authentication is configured, but authorization is not」と書いているとおり、認可・整合性・非同期の設計は最初から Generator の対象外です。
+今回はデプロイしていないので、Cognito → API → S3 直接 PUT の CORS、SES サンドボックス、S3 → SQS の KMS 権限、DynamoDB の条件式など、「デプロイして初めて分かる」項目はすべて未検証です。非機能要件を「読む」ことと「満たしたことを確認する」ことの間には、まだ大きな溝があります。
 
-## @aws/nx-plugin と AI エージェントの組み合わせが面白い理由
+**Generator 既定で構築したリソースのコスト**
 
-それでも、この組み合わせには AI に CDK を素で書かせるのとは違う良さがありました。
+Cognito Plus、WAF × 3、KMS × 4〜5、アクセスログの KMS 暗号化は、小さなアプリには固定費として重いです。Case 3 の AI 自身がこれを指摘していましたが、要件に対して過剰かどうかを決めるのは人間です。
 
-**1. 定型部分の品質が AI の出来に左右されない**
+### 境界線をまとめると
+
+AI に任せられるのは「設計案と実装を出し、判断の根拠とレビュー項目を明示するところまで」で、人間が持つのは「解釈の確定、既定値を動かす判断、数値、実機検証、コスト」です。AI 自身が DESIGN.md で「レビューが必要」と申告した項目と、この境界線はほぼ一致していました。
+
+## @aws/nx-plugin と コーディングエージェントの組み合わせの可能性
+
+それでも、この組み合わせには AI に CDK を素で書かせるのとは違う良さがありました。上の境界線に沿って、「AI の責務を軽くするもの」と「人間のレビューを楽にするもの」に分けて整理します。
+
+### AI の責務を軽くするもの
+
+**定型部分の品質が AI の出来に左右されない**
 
 CloudFront + S3 + WAF + セキュリティヘッダ、API Gateway + Cognito オーソライザー + アクセスログ + スロットリング、DynamoDB の CMK 暗号化 + PITR + 削除保護、Lambda の Powertools 統合。これらは 4 ケースとも同一の Construct から生成され、Checkov を通過しています。AI が毎回ゼロから書けば、ケースごとに抜け漏れが出るところです。
 
-**2. AI の判断が「どの Generator を、どのオプションで」に圧縮され、追跡できる**
+**Checkov がフィードバックループになる**
+
+Case 3 では Checkov の失敗（SQS の暗号化、バケットのバージョニング）を受けて AI が設計を修正しました。Generator が build に組み込んだ静的検査が、AI の手書き部分にも効いています。人間がレビューで拾うはずだった指摘の一部を、ビルドの段階で機械が返しています。
+
+### 人間のレビューを楽にするもの
+
+**AI の判断が「どの Generator を、どのオプションで」に圧縮され、追跡できる**
 
 MCP のログを見れば、AI がいつ・何を調べ・何を選んだかが残ります。`S3SqsEventNotificationSchema` を最初期に引いた Case 3、`ts#api` と `ts#dynamodb` から入った Case 4 のように、設計判断の順序がツール呼び出しに現れるのは、レビューする側にとって助かります。
 
-**3. Checkov がフィードバックループになる**
+**レビューすべき場所が集約される**
 
-Case 3 では Checkov の失敗（SQS の暗号化、バケットのバージョニング）を受けて AI が設計を修正しました。Generator が build に組み込んだ静的検査が、AI の手書き部分にも効いています。
+「AI によるアーキテクチャ判断」と「再現性のある Infrastructure as Code」を分離できるのが、この組み合わせの本質だと思います。AI の判断は `application-stack.ts` の数十〜百数十行と、DESIGN.md に集約されます。人間が持つべき範囲（解釈、既定値の変更、数値）は、ほぼこの 2 ファイルを読めば確認できます。
 
-**4. 再現性のある IaC の上に、AI の判断を乗せられる**
+### 限界
 
-「AI によるアーキテクチャ判断」と「再現性のある Infrastructure as Code」を分離できるのが、この組み合わせの本質だと思います。AI の判断は `application-stack.ts` の数十〜百数十行と、DESIGN.md に集約されます。レビューすべき場所が明確です。
-
-ただし限界も見えました。Generator にない部品（キュー、スケジューラ、メール、バケット）はやはり手書きですし、Generator の Construct にオプションが足りなければ改変が必要になります。プラグインの守備範囲が広がるほど AI に任せられる範囲も広がる、という関係にあります。
+Generator にない部品（キュー、スケジューラ、メール、バケット）はやはり手書きで、ここは通常の「AI に CDK を書かせる」品質に戻ります。Generator の Construct にオプションが足りなければ改変も必要になります（Case 3）。プラグインの守備範囲が広がるほど AI に任せられる範囲も広がる、という関係にあります。
 
 ## まとめ
 
@@ -700,6 +618,7 @@ Case 3 では Checkov の失敗（SQS の暗号化、バケットのバージョ
 
 - ユーザーストーリーだけで、4 ケースとも **ビルド・テスト・`cdk synth`・Checkov が通るアプリ + インフラ** が生成されました。サービス選定、Generator の発見と実行、非同期・イベント駆動の判断、トランザクションによる整合性設計まで、AWS サービス名を一切与えずに行われています。
 - 一方で、要件解釈の分岐、セキュリティ既定を緩める判断、数値で決める非機能要件、実機での検証、コストは、AI 自身が「レビューが必要」と申告したとおり、人間側に残っています。
-- そして、Generator の存在はアーキテクチャの正しさを保証しません。Case 1 と Case 4 が同じ Generator 構成だったことが、それを端的に示しています。
 
-「AI に設計を丸投げする」のではなく、「AI が設計案と実装を出し、人間が DESIGN.md と `application-stack.ts` をレビューする」という分業なら、@aws/nx-plugin はその分業をかなり現実的なものにしてくれます。次は実際にデプロイして、レビュー項目に挙がった箇所が本当に問題になるのかを確かめてみたいと思います。
+
+「AI に設計を丸投げする」のではなく、「AI が設計案と実装を出し、人間が DESIGN.md と `application-stack.ts` をレビューする」という運用で、
+たたき台を作るのには良さそうです。アウトプットのクオリティの質を担保するためにも、丸投げする側が業務ドメインや背景を深く理解しておくことが必要になりそうです。
