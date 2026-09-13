@@ -110,6 +110,8 @@ AWS上で動作するアプリケーションとして構築してください�
 ログインしたユーザーだけが写真を投稿できるようにしたい。」
 ```
 
+このケースでは、認証・API・DB の基本構成に加えて、画像本体の保存先と配信経路（オブジェクトストレージ、CDN）、そしてアップロードの方式をどう判断するかを見ます。
+
 ### Claude Code が解釈した要件
 
 DESIGN.md の要件表を、機能要件と非機能要件に分けて示します。「出どころ」は、ストーリーのどの語から導いたか、ストーリーにない補完かを表します。
@@ -225,6 +227,8 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=photo-api --targetProject=ph
 期限が近づいたら通知してほしい。
 自分のタスクは自分だけが閲覧・編集できるようにしたい。」
 ```
+
+このケースでは、CRUD だけでなく、「自分だけ」から認可を、「期限が近づいたら通知」からスケジュール実行・非同期処理・通知手段を設計できるかを見ます。
 
 ### Claude Code が解釈した要件
 
@@ -345,7 +349,7 @@ Generator で生まれたのは、この図の CloudFront / S3 / WAF / Cognito /
 処理に時間がかかる場合でも、ブラウザを開いたまま待つ必要はないようにしてほしい。」
 ```
 
-このケースの焦点は、「時間のかかる処理を同期 HTTP リクエストで処理すべきではない」と要件から読み取れるかです。
+このケースでは、「時間のかかる処理を同期 HTTP リクエストで処理すべきではない」と要件から読み取れるかを見ます。
 
 ### Claude Code が解釈した要件
 
@@ -468,7 +472,7 @@ S3 バケット、SQS + DLQ、S3 イベント通知、Lambda の SQS イベン�
 発売開始直後に大量のユーザーがアクセスしても、同じ座席が二重販売されないようにしてほしい。」
 ```
 
-最も難しいケースです。「大量のユーザー」からスケーラビリティを、「二重販売されない」から強い整合性や条件付き書き込み・トランザクションを読み取れるかを見ます。
+このケースでは、「大量のユーザー」からスケーラビリティを、「二重販売されない」から強い整合性や条件付き書き込み・トランザクションを読み取れるかを見ます。
 
 ### Claude Code が解釈した要件
 
@@ -485,8 +489,6 @@ DESIGN.md の要件表を、機能要件と非機能要件に分けて示しま�
 | F5 | 販売開始前は確保できない | 「発売開始直後」 | `salesStartAt` をサーバー時刻で判定 |
 | F6 | 自分の注文の状態と履歴を見られる | 補完 | `orders.get` / `orders.listMine` |
 | F7 | 管理者がイベントと座席レイアウトを登録できる | 補完 | `events.create`（Cognito の `admin` グループ限定） |
-
-決済はスコープ外と解釈し、「決済オーソリ成功後に `confirm` を呼ぶ」差し込み点だけ用意しています。
 
 **非機能要件**
 
@@ -576,8 +578,8 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=ticket-api --targetProject=t
 
 ### 要件によらず修正・検証が必要なインフラ設計
 
-- **整合性の担保が未検証**：二重販売防止の要である条件式は、DocumentClient のフェイクに対するテストしかなく、DynamoDB で意図どおり評価されることは確認できていません（Docker が使えず DynamoDB Local を起動できなかったため）。
-- **インフラ側のスパイク対策が既定値**：スパイク対策として追加されたのは WAF の IP レート制限だけで、API Gateway のスロットリングは Generator 既定（10,000 rps）のまま、Lambda の予約同時実行数は未設定、オンデマンドテーブルの初期スループット上限（新規作成直後は 4,000 WCU / 12,000 RCU 程度）も未対応です。AI 自身が「上限緩和申請」「事前ウォームアップ」をレビュー項目に挙げていますが、負荷試験なしにこの構成で発売日を迎えることはできません。
+- **整合性の担保が未検証**：二重販売防止の要である条件式は、DocumentClient のフェイクに対するテストしかなく、DynamoDB で意図どおり評価されることは確認できていません。
+- **インフラ側のスパイク対策が既定値**：スパイク対策として追加されたのは WAF の IP レート制限だけで、API Gateway のスロットリングは Generator 既定（10,000 rps）のまま、Lambda の予約同時実行数は未設定、オンデマンドテーブルの初期スループット上限（新規作成直後は 4,000 WCU / 12,000 RCU 程度）も未対応です。
 
 ## 4 ケースを比較してみる
 
@@ -594,12 +596,11 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=ticket-api --targetProject=t
 | 手書き CDK | S3 バケット | EventBridge Rule、SES | S3 バケット、SQS、DLQ、S3 通知、イベントソースマッピング | WAF レート制限ルール、Lambda 操作別設定、Cognito グループ |
 | Generator 実行回数 | 7 | 9 | 9 | 7 |
 | Generator 生成物の改変 | なし | なし | Lambda Construct に props 追加 | logger と local-server の小改変 |
-| 最優先で確認したい前提 | 画像配信を S3 署名付き URL 直にしたこと | MFA を任意に緩めたこと | 認証方式を既定（IAM）のまま通したこと | 同期 API のみで負荷試験がないこと |
 
 4 ケースを通じて共通していたのは次の点です。
 
-- **フロント / API / 認証 / DB の「型」は完全に固定**：4 ケースとも `ts#website`（CloudFront + S3）+ `ts#api`（API Gateway REST + Lambda + tRPC）+ `ts#website#auth`（Cognito）+ `ts#dynamodb` で、`ts#rdb`（Aurora）と `smithy`、`py#*`、`http-lambda` は毎回「検討したが見送り」でした。これは要件から選んだというより、**Generator の既定値と、その既定に WAF・アクセスログ・Checkov が付いてくることへの信頼** で選んでいる面が強いと感じます。
-- **差が出るのは Generator の外側**：S3、SQS、EventBridge、SES、WAF のカスタムルール、トランザクション、GSI 設計は、すべて `application-stack.ts` とアプリコードの手書きです。ケースの難易度が上がるほど、Generator が担う割合は下がりました。
+- **フロント / API / 認証 / DB の「型」は完全に固定**：4 ケースとも `ts#website`（CloudFront + S3）+ `ts#api`（API Gateway REST + Lambda + tRPC）+ `ts#website#auth`（Cognito）+ `ts#dynamodb` で、`ts#rdb`（Aurora）と `smithy`、`py#*`、`http-lambda` は毎回「検討したが見送り」でした。ただし、プロンプトで「利用可能な場合は Generator を優先」と指示しているので、Generator でカバーされる型に寄ること自体は指示の帰結です。一方で、Generator がある Aurora を 4 回とも退けて DynamoDB を選んだ判断や、Generator のない SQS・EventBridge・SES を必要な場面で足した判断もしているので、型の選定自体は要件から行っているとみてもよさそうです。
+- **Generator のサポート外は全てAI作成CDK**：S3、SQS、EventBridge、SES、WAF のカスタムルール、トランザクション、GSI 設計は、すべて `application-stack.ts` とアプリコードの手書きです。ケースの難易度が上がるほど、Generator が担う割合は下がりました。
 
 一方、4 ケースで割れたのはセキュリティ既定の扱いです。MFA 必須の既定を、Case 2 だけが「摩擦を優先」して任意に緩め、Case 1 と Case 4 は「既定を崩さずレビューに委ねる」とし、Case 3 は既定のまま触れていません。同じモデル・同じプロンプト形式でも、こうした判断はぶれます。
 
