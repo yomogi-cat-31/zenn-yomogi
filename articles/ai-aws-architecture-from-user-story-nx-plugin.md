@@ -1,5 +1,5 @@
 ---
-title: "（aws/nx-plugin）ユーザーストーリーだけ渡したら、AIはAWSアーキテクチャをどこまで設計してくれるのか？"
+title: "【aws/nx-plugin】Claude Codeに、AWSサービス名や構成を指定せずユーザーストーリーだけ渡したら、どこまで設計できるのか？"
 emoji: "🏗️"
 type: "tech"
 topics: ["aws", "claudecode", "nx", "cdk", "ai"]
@@ -572,7 +572,7 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=ticket-api --targetProject=t
 ### 要件によらず妥当だったインフラ設計
 
 - **整合性を DB 層に置いた**：仮押さえは 1 つの `TransactWriteItems` に「注文の Put（`attribute_not_exists`）」と「座席 N 件の Update（`status = AVAILABLE OR (HELD AND holdExpiresAt < now)`）」を載せ、1 席でも条件を満たさなければ全体をロールバックします。「3 席中 2 席だけ確保できた」も「同じ座席が 2 注文に載る」も構造的に起きません。
-- **ホットパーティションの回避**：座席の pk に `seatId` を含めて 1 座席 1 アイテムにし、「pk を `eventId` だけにすると 1 イベントの全書き込みが 1 パーティション（1,000 WCU/秒）に集中する」と理由を明記。座席一覧用 GSI も 8 シャードに分割し、シャード数をイベントに保存して後から変更できるようにしています。
+- **ホットパーティションの回避**：座席ごとに partition key を分散させ、発売直後の書き込みが特定の partition key に集中することを避けています。DynamoDB の物理パーティションには書き込みスループットの上限があるため、eventId のような低カーディナリティなキーにアクセスを集中させるより、seatId を含めて負荷を分散しやすいキー設計にしています。
 - **DynamoDB TTL を座席解放に使わなかった**：「TTL の削除は最大 48 時間遅延する」ため読み取り時判定を採用。TTL を安易に使うと壊れる典型例を避けています。
 - **冪等キー**：クライアント生成 UUID を `orderId` 兼冪等キーにし、二重クリックやネットワーク断による二重注文を防いでいます。
 
@@ -599,10 +599,10 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=ticket-api --targetProject=t
 
 4 ケースを通じて共通していたのは次の点です。
 
-- **フロント / API / 認証 / DB の「型」は完全に固定**：4 ケースとも `ts#website`（CloudFront + S3）+ `ts#api`（API Gateway REST + Lambda + tRPC）+ `ts#website#auth`（Cognito）+ `ts#dynamodb` で、`ts#rdb`（Aurora）と `smithy`、`py#*`、`http-lambda` は毎回「検討したが見送り」でした。ただし、プロンプトで「利用可能な場合は Generator を優先」と指示しているので、Generator でカバーされる型に寄ること自体は指示の帰結です。一方で、Generator がある Aurora を 4 回とも退けて DynamoDB を選んだ判断や、Generator のない SQS・EventBridge・SES を必要な場面で足した判断もしているので、型の選定自体は要件から行っているとみてもよさそうです。
-- **Generator のサポート外は全てAI作成CDK**：S3、SQS、EventBridge、SES、WAF のカスタムルール、トランザクション、GSI 設計は、すべて `application-stack.ts` とアプリコードの手書きです。ケースの難易度が上がるほど、Generator が担う割合は下がりました。
+- **フロント / API / 認証 / DB の「型」は完全に固定**：4 ケースとも `ts#website`（CloudFront + S3）+ `ts#api`（API Gateway REST + Lambda + tRPC）+ `ts#website#auth`（Cognito）+ `ts#dynamodb` で、`ts#rdb`（Aurora）と `smithy`、`py#*`、`http-lambda` は毎回「検討したが見送り」でした。ただし、プロンプトで「利用可能な場合は Generator を優先」と指示しているので、Generator でカバーされる型に寄ること自体は指示の帰結です。一方で、Generator がある Aurora を 4 回とも退けて DynamoDB を選んだ判断や、Generator のない SQS・EventBridge・SES を必要なケースでは追加していることから、利用可能な Generator を機械的に組み合わせただけではなく、要件に応じたサービス選定も行っていたとみてよさそうです。
+- **Generatorのサポート外はAIが手書き**：S3、SQS、EventBridge、SES、WAF のカスタムルール、トランザクション、GSI 設計は、すべて `application-stack.ts` とアプリコードの手書きです。要件が Generator の守備範囲から外れるほど、Generator がそのまま担える範囲は小さくなり、AI が手書きする部分が増えています。
 
-一方、4 ケースで割れたのはセキュリティ既定の扱いです。MFA 必須の既定を、Case 2 だけが「摩擦を優先」して任意に緩め、Case 1 と Case 4 は「既定を崩さずレビューに委ねる」とし、Case 3 は既定のまま触れていません。同じモデル・同じプロンプト形式でも、こうした判断はぶれます。
+一方、4 ケースで割れたのはセキュリティ既定の扱いです。MFA 必須の既定を、Case 2 だけが「摩擦を優先」して任意に緩め、Case 1 と Case 4 は「既定を崩さずレビューに委ねる」とし、Case 3 は既定のまま触れていません。少なくとも今回の 4 ケースでは、セキュリティ既定をどこまで維持するかという判断は一貫していませんでした。
 
 ## どこまで AI に任せられそうか
 
@@ -612,7 +612,7 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=ticket-api --targetProject=t
 
 **Generator の発見と実行**
 
-4 ケースとも `list-generators` → `generator-guide`（オプション付き）→ 実行、という同じ手順を踏み、ガイドに書かれた推奨実装（identity ミドルウェア、`restrictCorsTo`、`grant*`、Runtime Config）をそのまま使っていました。Generator の選択ミスや、存在しない Generator を呼ぼうとした形跡はありません。ここは完全に任せられます。
+4 ケースとも `list-generators` → `generator-guide`（オプション付き）→ 実行、という同じ手順を踏み、ガイドに書かれた推奨実装（identity ミドルウェア、`restrictCorsTo`、`grant*`、Runtime Config）をそのまま使っていました。Generator の選択ミスや、存在しない Generator を呼ぼうとした形跡はありません。今回の4ケースでは安定して任せられました。
 
 **定番構成のサービス選定**
 
@@ -662,9 +662,9 @@ Lambda の同時実行上限、DynamoDB オンデマンドの初期スループ�
 
 ### AI の責務を軽くするもの
 
-**定型部分の品質が AI の判断に左右されない**
+**定型部分の品質のばらつきを大幅に減らせる**
 
-CloudFront + S3 + WAF + セキュリティヘッダ、API Gateway + Cognito オーソライザー + アクセスログ + スロットリング、DynamoDB の CMK 暗号化 + PITR + 削除保護、Lambda の Powertools 統合。これらは 4 ケースとも同一の Construct から生成され、Checkov を通過しています。AI が毎回ゼロから書けば、ケースごとに抜け漏れが出るところです。
+CloudFront + S3 + WAF + セキュリティヘッダ、API Gateway + Cognito オーソライザー + アクセスログ + スロットリング、DynamoDB の CMK 暗号化 + PITR + 削除保護、Lambda の Powertools 統合。これらは 4 ケースとも同一の Construct から生成され、Checkov を通過しています。
 
 **Checkov がフィードバックループになる**
 
@@ -678,7 +678,7 @@ MCP のログを見れば、AI がいつ・何を調べ・何を選んだかが�
 
 **レビューすべき場所が集約される**
 
-「AI によるアーキテクチャ判断」と「再現性のある Infrastructure as Code」を分離できるのが、この組み合わせの本質だと思います。AI の判断は `application-stack.ts` の数十〜百数十行と、DESIGN.md に集約されます。人間が持つべき範囲（解釈、既定値の変更、数値）は、ほぼこの 2 ファイルを読めば確認できます。
+「AI によるアーキテクチャ判断」と「再現性のある Infrastructure as Code」を分離できるのが、この組み合わせの本質だと思います。AI の判断は `application-stack.ts` の数十〜百数十行と、DESIGN.md に集約されます。これによりレビュー対象を絞るための起点になります。
 
 ### 限界
 
@@ -696,4 +696,4 @@ Generator にない部品（キュー、スケジューラ、メール、バケ�
 
 「AI に設計を丸投げする」のではなく、「AI が設計案と実装を出し、人間が DESIGN.md と `application-stack.ts` をレビューする」という運用で、たたき台を作るのには良さそうです。
 
-アウトプットのPDCAを早く回したり、クオリティの質を担保するためにも、開発者が業務ドメインや背景を深く理解しておくことが必要になりそうです。
+設計・実装・検証のサイクルを速く回しつつ品質を担保するためにも、開発者自身が業務ドメインや背景を深く理解しておくことが重要になりそうです。
