@@ -12,7 +12,7 @@ published: false
 
 部品がこれだけ揃っていて、AI がその部品を調べて呼べるなら、ユーザーストーリーだけを渡したら、どこまで自力でアーキテクチャを決めて実装まで持っていけるのか気になったので、検証してみたという趣旨の内容になります。
 
-Claude Code に `@aws/nx-plugin` を使える状態で、難易度の異なる 4 つのユーザーストーリーを与えました。AWS 上で構築することと Generator を優先することは指定していますが、具体的な AWS サービス名やアーキテクチャは指定していません。その条件で、何を選び、何を選ばず、どこで人間の判断が必要になったかを記録しました。
+Claude Code に `@aws/nx-plugin` を使える状態で、難易度の異なる3つのユーザーストーリーを与えました。AWS 上で構築することと Generator を優先することは指定していますが、具体的な AWS サービス名やアーキテクチャは指定していません。その条件で、何を選び、何を選ばず、どこで人間の判断が必要になったかを記録しました。
 
 ## @aws/nx-plugin とは
 
@@ -186,7 +186,7 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=photo-api --targetProject=ph
 ### 最終的な AWS アーキテクチャ
 
 ![Case 1 のアーキテクチャ。CloudFront + S3 の SPA、Cognito、API Gateway REST + Lambda ×4、DynamoDB、手書きの S3 PhotoBucket。画像は署名付き URL でブラウザから S3 に直接 PUT / GET する](/images/nx-plugin-user-story/case1-architecture.png)
-*Case 1：画像共有アプリ。グレーの枠は Generator が生成した部分（枠の下に Generator 名）、オレンジの破線枠は Generator がなく手書きした部分、オレンジの矢印は要件に直結する経路です。*
+*Case 1：画像共有アプリ。各枠の下に、その部分を生成した Generator 名、または手書き CDK であることを示しています。凡例は図の下部にあります。*
 
 個人的にはCloudFrontが入るかなと思っていたのですが、**画像配信には CloudFront を使っていません**。一覧 API が写真ごとに S3 の署名付き GET URL を返す方式です。
 
@@ -205,141 +205,19 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=photo-api --targetProject=ph
 | 写真バケットとテーブルは `RETAIN` | 誤削除防止を優先 | 検証環境を頻繁に作り直すなら `DESTROY` |
 | 全写真のフィードを単一パーティション（`feed=ALL`） | 書き込みは個人利用程度 | 投稿が多いなら日付などでパーティションを分割 |
 
-### 要件によらず妥当だったインフラ設計
+### 今回の要件に対して妥当だった設計・実装
 
 - **S3 キーに所有者を埋め込む**：`photos/<ownerSub>/<photoId>.<ext>` を呼び出しユーザーの `sub` から組み立てるため、他人のアップロードを自分の写真として登録できません。
 - **操作ごとの最小権限**：`createUploadUrl` には PutObject だけ、`list` には Read だけと、Lambda 単位で S3 / DynamoDB の権限を分けています。`integrationPattern=isolated` を選んだ理由もこれでした。
 
-### 要件によらず修正・検証が必要なインフラ設計
+### 本番利用に向けて修正・追加検証が必要な点
 
 - **孤児オブジェクト**：`createUploadUrl` の後に `confirmUpload` が呼ばれないと、S3 に未登録の画像が残ります。ライフサイクルは不完全マルチパートと旧バージョンにしか効きません。
 - **削除の一貫性**：S3 削除 → DynamoDB 削除の順で、途中失敗するとレコードだけが残ります。
 - **写真バケットのアクセスログを Checkov 抑制で通した**：`CKV_AWS_18` を理由付きで抑制していますが、本番利用を想定するなら、アクセスログの要否を改めて確認すべきです。
 - **実ファイル形式の検証はしていない**：`HeadObject` で確認できる `Content-Type` はアップロード時に設定されたメタデータです。実際のバイト列が JPEG / PNG などとして妥当かまで保証したい場合は、magic bytes や画像デコードによる検証が別途必要です。
 
-## Case 2：通知付きタスク管理
-
-### 与えたユーザーストーリー
-
-```text
-「ユーザーとして、タスクと期限を登録したい。
-期限が近づいたら通知してほしい。
-自分のタスクは自分だけが閲覧・編集できるようにしたい。」
-```
-
-このケースでは、CRUD だけでなく、「自分だけ」から認可を、「期限が近づいたら通知」からスケジュール実行・非同期処理・通知手段を設計できるかを見ます。
-
-### Claude Code が解釈した要件
-
-DESIGN.md の要件表を、機能要件と非機能要件に分けて示します。
-
-**機能要件**
-
-| # | 要件 | 出どころ | 設計上の対応 |
-| --- | --- | --- | --- |
-| F1 | ユーザー登録・サインイン | 「ユーザーとして」 | Cognito User Pool、自己サインアップ、メール検証 |
-| F2 | タスクと期限を登録する | ストーリー | `tasks.create` → DynamoDB。タイトル・メモ・期限・通知タイミングを持つ |
-| F3 | 一覧（期限順）・取得・更新・完了 / 再開・削除 | 補完 | `tasks.list / get / update / delete` |
-| F4 | 期限が近づいたら通知する | ストーリー | EventBridge Rule（5 分ごと）→ Lambda → SES。通知タイミングはタスクごとに「期限の N 分前」（既定 60 分、上限 7 日） |
-| F5 | 期限や通知タイミングの変更に追従し、完了したら通知しない | 補完 | API 側で通知予定を再計算 |
-| F6 | 自分のタスクは自分だけが閲覧・編集できる | ストーリー | 認証（Cognito オーソライザー）+ 認可（パーティションキーを Cognito `sub` にし、全操作をそのキー配下に限定） |
-
-**非機能要件**
-
-| # | 要件 | 出どころ | 設計上の対応 |
-| --- | --- | --- | --- |
-| N1 | 他人のタスクに到達させない | 「自分だけ」 | 全メソッドに Cognito 認証を必須化。他人のタスクは 404（ID の存在を漏らさない） |
-| N2 | 通知の重複送信を抑える | 「通知してほしい」 | 送信前に `pending → sent` を条件付き更新。失敗時は `pending` に戻して次回再試行。前日分も走査して取りこぼしを回収 |
-| N3 | コストを抑える | 補完 | サーバーレス構成（API Gateway + Lambda + DynamoDB オンデマンド + EventBridge） |
-| N4 | 可観測性 | 補完（Generator 既定） | Powertools による構造化ログ・X-Ray・カスタムメトリクス |
-
-スコープ外として、メール以外の通知チャネル、ユーザーごとのタイムゾーン、繰り返しタスク、共有タスク、ページネーションが明示されていました。要件に書いていない「通知の重複送信を抑える」「完了したタスクは通知しない」「期限変更時の追従」まで拾っています。
-
-### 選択した AWS サービス
-
-| 役割 | 選択されたもの | Generator 既定か手書きか | 選択理由（DESIGN.md より要約） |
-| --- | --- | --- | --- |
-| Frontend | S3 + CloudFront（React + Cloudscape） | Generator（`ts#website --ux=cloudscape` を指定） | `ts#website` の既定。一覧・フォーム・モーダル中心の画面には Cloudscape の部品がそのまま使える |
-| API | API Gateway REST + Lambda（tRPC） | Generator（`ts#api` の既定 `rest-lambda`） | `ts#api` の既定。REST を選ぶと Cognito オーソライザー・WAF・アクセスログが付く。HTTP API は WAF が付かないため見送り |
-| Authentication | Cognito User Pool + Identity Pool | Generator + 手書き（`ts#website#auth`。MFA の既定を任意に変更した部分は手書き） | `ts#website#auth` と `ts#api --auth=cognito` が直接サポート。JWT の `sub` をそのまま所有者キーにできる |
-| Database | DynamoDB（シングルテーブル、ElectroDB、GSI 2 本） | Generator + 手書き（テーブルは `ts#dynamodb`、pk=userId と GSI 2 本の設計は手書き） | pk=userId で所有者分離が自然に表現でき、キー設計そのものが認可境界になる。Aurora は VPC・接続管理・コストが過剰 |
-| Storage | なし（ファイル要件なし） | ― | ― |
-| Async / Schedule | **EventBridge Rule（rate 5 分）→ Lambda** | **手書き CDK**（EventBridge Rule）+ Generator（関数本体は `ts#lambda-function`） | ポーリング型。タスクごとに EventBridge Scheduler の単発スケジュールを作る方式ならタスク単位で時刻を指定できるが、実行精度は 60 秒単位で、更新・削除のたびにスケジュールとの同期も必要になるため見送り |
-| Notification | **Amazon SES**（EmailIdentity を CDK で登録） | **手書き CDK**（SES EmailIdentity、IAM 条件） | SNS のメール購読は宛先ごとに購読確認が必要でユーザー体験が悪い。IAM は `ses:SendEmail` を送信元 ARN + `ses:FromAddress` 条件で限定 |
-| CDN | CloudFront（Generator 既定） | Generator（`ts#website` の既定） | ― |
-| Security | WAF（API / CloudFront）、KMS CMK、Cognito MFA は **TOTP のみ任意に変更** | Generator 既定（WAF、KMS）+ 手書き（MFA 緩和、SES 権限の絞り込み） | SMS MFA は電話番号必須・送信コストがあるため無効化。「個人向けタスク管理としてはサインアップの摩擦を優先」 |
-
-### @aws/nx-plugin で利用した Generator
-
-MCP ラッパーの呼び出しログ（`.mcp-calls.log`）は次の順でした。
-
-```text
-tools
-general-guidance
-list-generators
-best-practices {"pages":["workspace","typescript-project","security","runtime-config"]}
-generator-guide ts#infra
-generator-guide ts#website#auth
-generator-guide ts#lambda-function {"event":"EventBridgeSchema","infra":"lambda"}
-generator-guide ts#dynamodb
-generator-guide ts#api {"framework":"trpc","auth":"cognito","infra":"rest-lambda"}
-generator-guide ts#website {"framework":"react","ux":"cloudscape"}
-generator-guide connection {"sourceType":"ts#react-website","targetType":"ts#trpc-api"}
-generator-guide connection {"sourceType":"ts#trpc-api","targetType":"ts#dynamodb"}
-```
-
-`list-generators` を見た時点で `ts#lambda-function` のイベントスキーマに `EventBridgeSchema` があることを見つけ、その組み合わせで `generator-guide` を引き直しています。つまり「定期実行 → EventBridge」という判断は、ガイドを読む前に自分で立て、その裏付けとして Generator の対応を確認した、という順序です。
-
-実行した Generator は 9 回でした。
-
-```bash
-pnpm nx g @aws/nx-plugin:ts#dynamodb --name=task-store
-pnpm nx g @aws/nx-plugin:ts#api --name=task-api --framework=trpc --auth=cognito
-pnpm nx g @aws/nx-plugin:ts#website --name=task-web --framework=react --ux=cloudscape
-pnpm nx g @aws/nx-plugin:ts#website#auth --project=@case2-task-reminder/task-web --allowSignup=true
-pnpm nx g @aws/nx-plugin:ts#project --name=task-reminder
-pnpm nx g @aws/nx-plugin:ts#lambda-function --project=@case2-task-reminder/task-reminder \
-  --name=send-due-reminders --event=EventBridgeSchema
-pnpm nx g @aws/nx-plugin:connection --sourceProject=…/task-web --targetProject=…/task-api
-pnpm nx g @aws/nx-plugin:connection --sourceProject=…/task-api --targetProject=…/task-store
-pnpm nx g @aws/nx-plugin:ts#infra --name=infra
-```
-
-### 最終的な AWS アーキテクチャ
-
-![Case 2 のアーキテクチャ。CloudFront + S3 の SPA、Cognito、API Gateway REST + Lambda ×5、DynamoDB（pk=userId）、EventBridge Rule（5 分ごと）→ Lambda → SES → メール。リマインダー Lambda は pending→sent を条件付き更新](/images/nx-plugin-user-story/case2-architecture.png)
-*Case 2：通知付きタスク管理。EventBridge Rule と SES は Generator がなく `application-stack.ts` に手書きされた部分です。*
-
-Generator で生まれたのは、この図の CloudFront / S3 / WAF / Cognito / API Gateway / Lambda（tRPC）/ DynamoDB / AppConfig の部分です。EventBridge Rule、SES EmailIdentity、リマインダー Lambda への権限付与と環境変数、CORS 制限は `application-stack.ts` に Claude Code が手書きしていました。
-
-### AI が置いた前提（人間が確認すべきポイント）
-
-| AI の判断 | 前提にした要件 | 要件が違えば |
-| --- | --- | --- |
-| MFA を TOTP のみ任意に変更（Generator 既定は必須） | 個人向けで、サインアップの摩擦を減らしたい | 組織利用や機微情報を扱うなら既定の必須に戻す |
-| 通知は EventBridge Rule の 5 分ポーリング | 通知の遅延は 5 分程度まで許容 | 1 分程度の精度でタスクごとに時刻を指定したいなら EventBridge Scheduler の単発スケジュール方式（更新・削除のたびに同期が必要） |
-| 通知チャネルはメール（SES）のみ | プッシュや SMS は不要 | チャネルが増えるなら SNS を挟む構成 |
-| 通知先は登録時の Cognito `email` をスナップショット | メールアドレスの変更は稀 | 変更に追従させるなら Lambda から Cognito を参照するか、Cognito トリガーで更新 |
-| メール本文は JST 固定 | 日本国内の利用者のみ | 海外ユーザーがいるならユーザー属性にタイムゾーン |
-| 「期限が近づいたら」= タスクごとに N 分前を選ぶ（既定 60 分、上限 7 日） | 通知タイミングはユーザーが決める | 固定でよいなら UI を簡素化できる |
-| 一覧は全件取得 | 1 ユーザーのタスクは数百件以下 | それ以上ならカーソル方式のページネーション |
-| 他人のタスクは 403 ではなく 404 | ID の存在を漏らさない方を優先 | 監査目的で拒否を区別したいなら 403 |
-
-このうち MFA の緩和は、セキュリティ既定を弱める方向の判断を確認なしに行った点で、他の前提より優先して確認すべきです。Case 1 と Case 4 は既定を維持しており、少なくとも今回の 4 ケースでは、セキュリティ既定をどこまで維持するかという判断は一貫していませんでした。
-
-### 要件によらず妥当だったインフラ設計
-
-- **認可をキー設計に落とした**：「自分のタスクだけ」を、アプリ層の if 文ではなく DynamoDB のパーティションキー（Cognito `sub`）で表現し、他人のキーには構造的に到達できないようにしています。テストにも「所有者分離」「他人の ID は NOT_FOUND」のケースがあります。
-- **通知の重複送信を抑える設計**：送信前に `reminderState` を `pending → sent` へ条件付き更新し、更新できた場合だけ SES を呼ぶことで、同時実行による重複送信を抑えています。ただし、DynamoDB の状態更新と SES 送信は原子的ではないため、厳密な exactly-once 送信を保証するものではありません。
-- **GSI の日付バケット**：未送信タスクの抽出用 GSI を `reminderState#日付` で分割し、当日と前日だけ走査します。全 pending を単一パーティションに入れない配慮です。
-- **SES と SNS の比較**：「SNS のメール購読は宛先ごとに購読確認が必要」という、実際に使うと引っかかる点を理由に SES を選んでいます。
-- **IAM の絞り込み**：`ses:SendEmail` を EmailIdentity の ARN と `ses:FromAddress` 条件で限定しています。
-
-### 要件によらず修正・検証が必要なインフラ設計
-
-- **SES の送信元アドレスとサンドボックス**：既定値の `no-reply@example.com` は必ず差し替えが必要で、SES サンドボックスの間は検証済み宛先にしか送れません。デプロイ前に必ず引っかかる項目で、AI 自身も DESIGN.md に挙げています。
-
-## Case 3：CSV 分析サービス
+## Case 2：CSV 分析サービス
 
 ### 与えたユーザーストーリー
 
@@ -384,7 +262,7 @@ DESIGN.md の要件表を、機能要件と非機能要件に分けて示しま�
 | --- | --- | --- | --- |
 | Frontend | S3 + CloudFront（React + Cloudscape） | Generator（`ts#website --ux=cloudscape` を指定） | Cloudscape は `BarChart` などのチャート部品を標準で持つため。shadcn だとチャートを別途導入する必要がある |
 | API | API Gateway REST + Lambda（tRPC、5 プロシージャ） | Generator（`ts#api` の既定 `rest-lambda`） | Generator 既定。WAF・アクセスログ付き |
-| Authentication | Cognito User Pool + Identity Pool、**API は IAM 認証（SigV4）** | Generator（`ts#api` の既定 `auth=iam`、`ts#website#auth` の既定 `allowSignup=false`）。他 3 ケースはここを Cognito に変えている | Identity Pool の一時クレデンシャルで API を呼ぶ。セルフサインアップは無効（管理者がユーザーを作る運用を想定） |
+| Authentication | Cognito User Pool + Identity Pool、**API は IAM 認証（SigV4）** | Generator（`ts#api` の既定 `auth=iam`、`ts#website#auth` の既定 `allowSignup=false`）。他の詳細ケースはここを Cognito に変えている | Identity Pool の一時クレデンシャルで API を呼ぶ。セルフサインアップは無効（管理者がユーザーを作る運用を想定） |
 | Database | DynamoDB（ジョブ状態と所有者、GSI で所有者別一覧） | Generator + 手書き（テーブルは `ts#dynamodb`、ジョブ状態のエンティティは手書き） | キー参照と所有者別一覧だけの単純なアクセスパターン |
 | Storage | **S3 DataBucket（手書き）**：`uploads/` と `results/` をプレフィックスで分離、KMS CMK、ライフサイクル | **手書き CDK**（対応する Generator なし） | 署名付き URL で直接 PUT。結果 JSON も同じバケットに |
 | Async | **S3 イベント通知 → SQS（+ DLQ）→ Lambda（15 分 / 2 GB）** | **手書き CDK**（S3 通知、SQS、DLQ、イベントソースマッピング）+ Generator（関数本体は `ts#lambda-function`。Construct に props を追加する改変あり） | S3 → Lambda 直接に比べ、再試行回数・可視性タイムアウト・DLQ を明示的に制御できる。**Step Functions は単一ステップには過剰、EventBridge は再試行制御が SQS より弱い** と判断。**ECS/Fargate や Glue は 15 分を超える超大容量で必要になるが、まずはサーバレス最小構成** |
@@ -428,12 +306,12 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=@case3-csv-analytics/website
 pnpm nx g @aws/nx-plugin:connection --sourceProject=@case3-csv-analytics/api --targetProject=@case3-csv-analytics/jobs
 ```
 
-S3 バケット、SQS + DLQ、S3 イベント通知、Lambda の SQS イベントソースマッピングは Generator にないため、すべて `application-stack.ts` に CDK で手書きされていました。また、`ts#lambda-function` が生成した Construct にタイムアウト・メモリ・DLQ を渡す `props` がなかったため、**生成された Construct に引数を追加する小さな改変** をしています（4 ケース中、`packages/common` に手を入れたのはこのケースだけです）。
+S3 バケット、SQS + DLQ、S3 イベント通知、Lambda の SQS イベントソースマッピングは Generator にないため、すべて `application-stack.ts` に CDK で手書きされていました。また、`ts#lambda-function` が生成した Construct にタイムアウト・メモリ・DLQ を渡す `props` がなかったため、**生成された Construct に引数を追加する小さな改変** をしています（`packages/common` に手を入れたのはこのケースだけです）。
 
 ### 最終的な AWS アーキテクチャ
 
-![Case 3 のアーキテクチャ。CloudFront + S3 の SPA、Cognito、API Gateway REST（IAM 認証）+ Lambda ×5、DynamoDB Jobs、S3 DataBucket → SQS（+DLQ）→ Lambda csv-processor。ブラウザは署名付き URL で S3 に直接 PUT](/images/nx-plugin-user-story/case3-architecture.png)
-*Case 3：CSV 分析サービス。S3 バケット、SQS、DLQ、イベント通知、イベントソースマッピングが手書き部分です。*
+![Case 2 のアーキテクチャ。CloudFront + S3 の SPA、Cognito、API Gateway REST（IAM 認証）+ Lambda ×5、DynamoDB Jobs、S3 DataBucket → SQS（+DLQ）→ Lambda csv-processor。ブラウザは署名付き URL で S3 に直接 PUT](/images/nx-plugin-user-story/case2-architecture.png)
+*Case 2：CSV 分析サービス。S3 バケット、SQS、DLQ、イベント通知、イベントソースマッピングが手書き部分です。*
 
 ### AI が置いた前提（人間が確認すべきポイント）
 
@@ -448,7 +326,7 @@ S3 バケット、SQS + DLQ、S3 イベント通知、Lambda の SQS イベン�
 | 入力 CSV は 7 日、結果は 90 日で削除 | 一時的な分析 | 監査や再集計が要るなら保持期間を変更。個人情報を含むなら短縮 |
 | サイズ上限 5 GiB（単一 PUT の上限） | 5 GiB で足りる | 超えるならマルチパートアップロード |
 
-### 要件によらず妥当だったインフラ設計
+### 今回の要件に対して妥当だった設計・実装
 
 - **同期 HTTP で処理しない判断を、最初期に下している**：MCP ログ上、`list-generators` の次に `S3SqsEventNotificationSchema` を引いています。「アップロード完了イベントをキューに入れて非同期に処理する」構成は Generator の詳細を読む前に決まっていました。
 - **S3 → Lambda 直接ではなく SQS を挟んだ理由が具体的**：再試行回数、可視性タイムアウト、DLQ の制御、失敗ファイルの事後調査。Step Functions / EventBridge / Fargate / Glue との比較も一段ずつ書かれています。
@@ -456,13 +334,13 @@ S3 バケット、SQS + DLQ、S3 イベント通知、Lambda の SQS イベン�
 - **Checkov の指摘を設計に取り込んだ**：初回の Checkov で SQS の KMS 暗号化（`CKV_AWS_27`）とログバケットのバージョニング（`CKV_AWS_21`）が失敗し、SQS を CMK 暗号化に変更しています。S3 から SSE-KMS で暗号化された SQS へ直接通知する場合、S3 サービスプリンシパルに KMS 権限を付与する必要があり、そのポリシーを変更できるカスタマーマネージドキーを使う必要があります。
 - **プレフィックスごとのライフサイクル**：入力・結果・アクセスログで削除ポリシーを分けています。
 
-### 要件によらず修正・検証が必要なインフラ設計
+### 本番利用に向けて修正・追加検証が必要な点
 
 - **`QUEUED → PROCESSING` が無条件更新**：`COMPLETED` 済みはスキップしますが、同じジョブの通知が重複して届いた場合に、処理開始を条件付き更新で排他していません。`batchSize: 1` は 1 回の Lambda 呼び出しに渡すメッセージ数を制限する設定であり、Lambda の並列実行数を 1 にする設定ではありません。SQS + Lambda は重複処理が起こり得るため、`QUEUED → PROCESSING` にも条件式を入れる方が堅牢です。
 - **DLQ の監視がない**：DLQ にメッセージが入ってもアラームは未実装です。
 - **処理容量が未計測**：15 分 / 2048 MB でどこまで処理できるかは測っていません。
 
-## Case 4：アクセス集中するチケット販売
+## Case 3：アクセス集中するチケット販売
 
 ### 与えたユーザーストーリー
 
@@ -548,12 +426,12 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=ticket-web --targetProject=t
 pnpm nx g @aws/nx-plugin:connection --sourceProject=ticket-api --targetProject=ticket-table
 ```
 
-つまり、**Generator の構成だけ見ると Case 1（写真共有）と Case 4（チケット販売）は同じ** です。難しさの差はすべて、Generator の外側にある手書き部分（データモデル、トランザクション、WAF ルール、Lambda の操作別設定）に現れています。
+つまり、**Generator の構成だけ見ると Case 1（写真共有）と Case 3（チケット販売）は同じ** です。難しさの差はすべて、Generator の外側にある手書き部分（データモデル、トランザクション、WAF ルール、Lambda の操作別設定）に現れています。
 
 ### 最終的な AWS アーキテクチャ
 
-![Case 4 のアーキテクチャ。CloudFront + S3 の SPA、Cognito（admin グループ）、WAF（IP レート制限追加）+ API Gateway REST + Lambda ×9、DynamoDB 単一テーブル。Lambda から DynamoDB へは TransactWriteItems と条件式で二重販売を防止](/images/nx-plugin-user-story/case4-architecture.png)
-*Case 4：チケット販売。使ったサービスの種類は Case 1 より少なく、難しさはデータモデルと条件式（手書き）に集中しています。*
+![Case 3 のアーキテクチャ。CloudFront + S3 の SPA、Cognito（admin グループ）、WAF（IP レート制限追加）+ API Gateway REST + Lambda ×9、DynamoDB 単一テーブル。Lambda から DynamoDB へは TransactWriteItems と条件式で二重販売を防止](/images/nx-plugin-user-story/case3-architecture.png)
+*Case 3：チケット販売。使ったサービスの種類は Case 1 より少なく、難しさはデータモデルと条件式（手書き）に集中しています。*
 
 ### AI が置いた前提（人間が確認すべきポイント）
 
@@ -568,92 +446,86 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=ticket-api --targetProject=t
 | 座席表は 5 秒ポーリング、1 回で 8 本の Query | 同時閲覧者は限定的 | 多いなら CloudFront / API Gateway キャッシュや WebSocket |
 | 管理者は Cognito の `admin` グループ、コンソールで追加 | 管理者は少数 | 管理画面や座席レイアウトの変更・削除 API が必要 |
 
-### 要件によらず妥当だったインフラ設計
+### 今回の要件に対して妥当だった設計・実装
 
 - **整合性を DB 層に置いた**：仮押さえは 1 つの `TransactWriteItems` に「注文の Put（`attribute_not_exists`）」と「座席 N 件の Update（`status = AVAILABLE OR (HELD AND holdExpiresAt < now)`）」を載せ、1 席でも条件を満たさなければ全体をロールバックします。「3 席中 2 席だけ確保できた」も「同じ座席が 2 注文に載る」も構造的に起きません。
 - **ホットパーティションの回避**：座席ごとに partition key を分散させ、発売直後の書き込みが特定の partition key に集中することを避けています。DynamoDB の物理パーティションには書き込みスループットの上限があるため、eventId のような低カーディナリティなキーにアクセスを集中させるより、seatId を含めて負荷を分散しやすいキー設計にしています。
 - **DynamoDB TTL を座席解放に使わなかった**：TTL の期限を過ぎても即時削除は保証されず、AWS のドキュメントでは通常「期限切れから数日以内」に削除されるとされています。そのため、5 分の仮押さえ解除のような厳密な期限判定には TTL を使わず、読み取り・更新時に `holdExpiresAt` を評価しています。
 - **冪等キー**：購入試行ごとにクライアントで UUID を生成し、ネットワークエラーなどで再試行する際にも同じ `orderId` を再利用することで、同一試行の重複注文を防いでいます。
 
-### 要件によらず修正・検証が必要なインフラ設計
+### 本番利用に向けて修正・追加検証が必要な点
 
 - **整合性の担保が未検証**：二重販売防止の要である条件式は、DocumentClient のフェイクに対するテストしかなく、DynamoDB で意図どおり評価されることは確認できていません。
 - **インフラ側のスパイク対策が既定値**：スパイク対策として追加されたのは WAF の IP レート制限だけで、API Gateway のスロットリングは Generator 既定（10,000 rps）のまま、Lambda の予約同時実行数は未設定、オンデマンドテーブルの初期スループット上限（新規作成直後は 4,000 WCU / 12,000 RCU 程度）も未対応です。
 
-## 4 ケースを比較してみる
+## 3 ケースを比較してみる
 
-| 軸 | Case 1 画像共有 | Case 2 タスク通知 | Case 3 CSV 分析 | Case 4 チケット販売 |
-| --- | --- | --- | --- | --- |
-| API の認証方式 | Cognito オーソライザー（JWT） | Cognito オーソライザー（JWT） | IAM 認証（SigV4、Generator 既定のまま） | Cognito オーソライザー（JWT） |
-| サインアップ / MFA | 自己サインアップ可 / MFA 必須（既定） | 自己サインアップ可 / MFA 任意（既定を変更） | 自己サインアップ不可（既定）/ MFA 必須（既定） | 自己サインアップ可 / MFA 必須（既定） |
-| 認可の実装 | S3 キーに投稿者 `sub` を反映 + 削除時に投稿者チェック | パーティションキー = ユーザー ID | 所有者 ID を属性に保存、他人は 404 | 注文の所有者チェック + `admin` グループ |
-| データストア | DynamoDB + S3 | DynamoDB | DynamoDB + S3 | DynamoDB |
-| DynamoDB の設計 | GSI 2（全体フィード、投稿者別） | GSI 2（期限順、通知抽出） | GSI 1（所有者別）、ジョブの状態遷移 | 座席単位で分散しやすい partition key、GSI 8 シャード、`TransactWriteItems` |
-| 非同期処理 | なし | EventBridge Rule（5 分）→ Lambda | S3 通知 → SQS（+ DLQ）→ Lambda | なし |
-| ユーザーへの通知 | なし | SES メール | なし | なし |
-| 重複・競合への対策 | なし | 条件付き更新（`pending → sent`）で重複を抑制 | 完了済みジョブのスキップ（同時重複には弱い） | トランザクション + 条件式 + 冪等キー |
-| 手書き CDK | S3 バケット | EventBridge Rule、SES | S3 バケット、SQS、DLQ、S3 通知、イベントソースマッピング | WAF レート制限ルール、Lambda 操作別設定、Cognito グループ |
-| Generator 実行回数 | 7 | 9 | 9 | 7 |
-| Generator 生成物の改変 | なし | なし | Lambda Construct に props 追加 | logger と local-server の小改変 |
+| 軸 | Case 1 画像共有 | Case 2 CSV 分析 | Case 3 チケット販売 |
+| --- | --- | --- | --- |
+| 主に見たかったこと | 標準的な Web アプリをどこまで組めるか | 長時間処理から非同期アーキテクチャを導けるか | 整合性・競合制御まで設計できるか |
+| API の認証方式 | Cognito オーソライザー（JWT） | IAM 認証（SigV4、Generator 既定のまま） | Cognito オーソライザー（JWT） |
+| サインアップ / MFA | 自己サインアップ可 / MFA 必須（既定） | 自己サインアップ不可（既定）/ MFA 必須（既定） | 自己サインアップ可 / MFA 必須（既定） |
+| 認可の実装 | S3 キーに投稿者 `sub` を反映 + 削除時に投稿者チェック | 所有者 ID を属性に保存、他人は 404 | 注文の所有者チェック + `admin` グループ |
+| データストア | DynamoDB + S3 | DynamoDB + S3 | DynamoDB |
+| DynamoDB の設計 | GSI 2（全体フィード、投稿者別） | GSI 1（所有者別）、ジョブの状態遷移 | 座席単位で分散しやすい partition key、GSI 8 シャード、`TransactWriteItems` |
+| 非同期処理 | なし | S3 通知 → SQS（+ DLQ）→ Lambda | なし |
+| 重複・競合への対策 | なし | 完了済みジョブのスキップ。ただし同時重複には追加対策が必要 | トランザクション + 条件式 + 冪等キー |
+| Generator 外の主な実装 | S3 バケット、アップロード/閲覧フロー | S3、SQS、DLQ、イベント通知、イベントソースマッピング | WAF レート制限、DynamoDB の条件式・トランザクション、Cognito グループ |
+| Generator 実行回数 | 7 | 9 | 7 |
+| Generator 生成物の改変 | なし | Lambda Construct に props 追加 | logger と local-server の小改変 |
 
-4 ケースを通じて共通していたのは次の点です。
+3 ケースを通じて共通していたのは次の点です。
 
-- **フロント / API / 認証 / DB の基幹となる「型」は共通**：4 ケースとも `ts#website`（CloudFront + S3）+ `ts#api`（API Gateway REST + Lambda + tRPC）+ `ts#website#auth`（Cognito）+ `ts#dynamodb` を採用し、`ts#rdb`（Aurora）や `smithy`、`py#*`、`http-lambda` は毎回「検討したが見送り」でした。ただし、プロンプトで「利用可能な場合は Generator を優先」と指示しているため、Generator でカバーされる構成に寄ること自体は指示の帰結です。一方で、Generator が用意されている Aurora を 4 ケースとも退けて DynamoDB を選んだことや、Generator のない SQS・EventBridge・SES を必要なケースでは追加していることから、利用可能な Generator を機械的に組み合わせただけではなく、要件に応じたサービス選定も行っていたとみてよさそうです。
-- **Generator のサポート外は AI が手書き**：画像・CSV 用の S3 バケット、SQS、EventBridge、SES、WAF のカスタムルールなどのインフラに加え、トランザクションや条件式、GSI のデータモデルといったアプリケーション側の設計も AI が補っていました。要件が Generator の守備範囲から外れるほど、Generator がそのまま担える範囲は小さくなり、AI が手書きする部分が増えています。
-
-一方、4 ケースで割れたのはセキュリティ既定の扱いです。MFA 必須の既定を、Case 2 だけが「摩擦を優先」して任意に緩め、Case 1 と Case 4 は「既定を崩さずレビューに委ねる」とし、Case 3 は既定のまま触れていません。少なくとも今回の 4 ケースでは、セキュリティ既定をどこまで維持するかという判断は一貫していませんでした。
+- **フロント / API / 認証 / DB の基幹となる「型」は共通**：3ケースとも `ts#website`（CloudFront + S3）+ `ts#api`（API Gateway REST + Lambda + tRPC）+ `ts#website#auth`（Cognito）+ `ts#dynamodb` を採用し、`ts#rdb`（Aurora）や `smithy`、`py#*`、`http-lambda` は検討したうえで見送っていました。プロンプトで「利用可能な場合は Generator を優先」と指示しているため、Generator でカバーされる構成に寄ること自体は指示の帰結です。一方で、Generator が用意されている Aurora を 3ケースとも退けて DynamoDB を選んだことや、Generator のない SQS・EventBridge・SES を必要なケースでは追加していることから、利用可能な Generator を機械的に組み合わせただけではなく、要件に応じたサービス選定も行っていたとみてよさそうです。
+- **要件が Generator の守備範囲から外れるほど、AI が手書きする範囲が増える**：S3 や SQS といった AWS リソースだけでなく、トランザクション、条件式、GSI のデータモデル、冪等性など、アプリケーション側の設計も AI が補っていました。
 
 ## どこまで AI に任せられそうか
 
-4 ケースの結果を、「AI に任せられた範囲」と「人間が持つべき範囲」に分けて整理します。
+3 ケースの結果を、「AI に任せられた範囲」と「人間が持つべき範囲」に分けて整理します。
 
 ### AI に任せられた範囲
 
 **Generator の発見と実行**
 
-4 ケースとも `list-generators` → `generator-guide`（オプション付き）→ 実行、という同じ手順を踏み、ガイドに書かれた推奨実装（identity ミドルウェア、`restrictCorsTo`、`grant*`、Runtime Config）をそのまま使っていました。Generator の選択ミスや、存在しない Generator を呼ぼうとした形跡はありません。今回の4ケースでは安定して任せられました。
+詳しく見た 3 ケースでは、`list-generators` → `generator-guide`（オプション付き）→ 実行という流れで、存在する Generator と利用方法を自分で調べていました。Generator の選択ミスや、存在しない Generator を呼ぼうとした形跡はありませんでした。少なくとも今回の検証では、この部分は安定していました。
 
 **定番構成のサービス選定**
 
-Cognito / API Gateway / Lambda / DynamoDB / S3 / CloudFront という、サーバレス構成には、サービス名を一切与えなくても到達しました。選定理由も 4 ケースで一貫しています。
+Cognito / API Gateway / Lambda / DynamoDB / S3 / CloudFront といったサーバーレス構成には、サービス名を一切与えなくても到達しました。さらに、CSV 分析では SQS、補助検証では EventBridge / SES と、Generator にないサービスも必要に応じて追加しています。
 
 **ユーザーストーリーに書かれていない要件を読み取り、設計に落とす**
 
-4 ケースとも、1〜2 文のストーリーから次のような非機能要件を引き出していました。
+1〜2 文のストーリーから、単なる CRUD 以上の要件まで展開していました。
 
 | ストーリーの一文 | 読み取った要件 | 設計への落とし方 |
 | --- | --- | --- |
-| 「ログインしたユーザーだけが投稿」（Case 1） | 認証に加えて、他人の投稿を自分のものとして登録できないこと | S3 キーに所有者の `sub` を埋め込む |
-| 「自分のタスクは自分だけが閲覧・編集」（Case 2） | 認可。他人の ID の存在も漏らさない | パーティションキーを `sub` にし、他人のキーには構造的に到達させない。他人の ID は 404 |
-| 「期限が近づいたら通知」（Case 2） | 定期実行の仕組みと、再実行時の重複送信を抑えること | EventBridge Rule のポーリングと、`pending → sent` の条件付き更新 |
-| 「ブラウザを開いたまま待つ必要はない」（Case 3） | 同期 HTTP で処理しない。失敗時の再試行と隔離 | S3 → SQS（+ DLQ）→ Lambda、冪等性 |
-| 「大量のユーザーがアクセスしても二重販売されない」（Case 4） | 強い整合性、冪等性、スパイク耐性、ボット対策 | `TransactWriteItems` と条件式、冪等キー、座席単位で分散しやすい partition key、WAF レート制限 |
+| 「ログインしたユーザーだけが投稿」（Case 1） | 認証に加えて、他人のアップロードを自分の写真として登録できないこと | S3 キーに所有者の `sub` を埋め込む |
+| 「ブラウザを開いたまま待つ必要はない」（Case 2） | 同期 HTTP で処理しない。失敗時の再試行と隔離 | S3 → SQS（+ DLQ）→ Lambda |
+| 「大量のユーザーがアクセスしても二重販売されない」（Case 3） | 強い整合性、冪等性、スパイク耐性、ボット対策 | `TransactWriteItems` と条件式、冪等キー、分散しやすい partition key、WAF レート制限 |
 
-逆に、入れない判断も要件から導いています。Case 4 では「キューを入れると非同期 UX になる」として同期 API を選び、Case 1 では S3 イベント方式を検討したうえで同期の `confirmUpload` を選んでいます。
-
-ただし読み取れたのは「設計」までで、それを満たす数値（同時実行数、スループット）は人間側に残ります。
+逆に、入れない判断もしています。Case 3 では、キューを挟むと購入 UX が非同期になるとして同期 API を選び、Case 1 では S3 イベント方式を検討したうえで同期の `confirmUpload` を選びました。
 
 **レビュー項目の洗い出し**
 
-SES サンドボックス、Cognito ドメインの一意性、オンデマンドテーブルの初期スループット、Lambda の同時実行上限、WAF レート制限の誤検知など、本番導入前に確認すべき運用事項を DESIGN.md に自分で書き出していました。「何をレビューすべきか」のリストを作る作業は、今回の 4 ケースではかなり任せられました。
+Cognito の設定、DynamoDB のスループット、Lambda の同時実行数、WAF のレート制限、DLQ 監視など、本番導入前に確認すべき点も DESIGN.md に挙げていました。「何を人間が確認すべきか」を洗い出す作業自体はかなり任せられます。
 
 ### 人間が持つべき範囲
 
 **要件の解釈そのもの**
 
-「共有」とは誰に見せることか（Case 1）、通知はメールでよいか（Case 2）、完了通知は要らないのか（Case 3）、決済はどこで入るか（Case 4）。AI は解釈を明示してくれますが、正解はプロダクト側にあります。
+「共有」とは誰に見せることか（Case 1）、CSV 処理完了時に通知は必要か（Case 2）、決済をどこまで含めるか（Case 3）。AI は不足している要件を補って先に進めますが、その補完がプロダクトとして正しいかは人間にしか決められません。
 
-**今回の定番構成から外れる選定**
+**定番から外れる選定**
 
-Aurora や Fargate、Step Functions、ElastiCache といった、今回採用されたサーバーレス中心の構成とは異なる選択肢も比較候補には挙がりましたが、多くは「過剰」「まずはサーバーレスで」と退けられました。要件によっては Aurora や Fargate の方が適切なケースもあるはずです。「選定できる」と「最適に選定できる」は別であり、後者には想定負荷、運用体制、コスト、SLO など、ユーザーストーリーだけでは分からない背景が必要です。
+Aurora、Fargate、Step Functions、ElastiCache なども比較候補には挙がりましたが、「過剰」「まずはサーバーレスで」と退けられました。今回の要件では妥当でも、想定負荷、運用体制、コスト、SLO が変われば別の選択肢が正解になる可能性があります。「選定できる」と「最適に選定できる」は別です。
 
 **セキュリティ既定を緩める判断**
 
-MFA、セルフサインアップ、署名付き URL の有効期限など、セキュリティ既定を緩める判断には注意が必要です。Case 2 では MFA を任意に変更した一方、Case 1 と Case 4 は既定を維持しました。今回の 4 ケースだけでも扱いは一貫しておらず、特にセキュリティを弱める方向の変更は人間が明示的にレビューすべきです。
+補助検証では、Claude Code が「個人向けサービスなのでサインアップの摩擦を減らす」と解釈し、Generator 既定の MFA 必須を任意に変更しました。理由は説明されていますが、セキュリティを弱める方向の変更をユーザーストーリーだけから決めてよいとは限りません。こうした変更は人間が明示的にレビューすべきです。
 
 **数値の入る非機能要件**
 
-Lambda の同時実行数、DynamoDB のスループット、API Gateway や WAF のレート制限、キューの可視性タイムアウト、データ保持期間など、数値を伴う非機能要件は要注意です。AI は一般的な既定値やベストプラクティスから数値を置けますが、その値が実際の想定負荷や SLO、コスト要件に合っているかまではユーザーストーリーだけでは判断できません。数値そのものよりも、その根拠を人間が確認する必要があります。
+Lambda の同時実行数、DynamoDB のスループット、API Gateway や WAF のレート制限、キューの可視性タイムアウト、データ保持期間などは、最終的には想定負荷や SLO、コスト要件に依存します。AI は妥当そうな初期値を置けても、その根拠が実際のサービス要件に合っているかまではユーザーストーリーだけでは判断できません。
 
 ## @aws/nx-plugin と コーディングエージェントの組み合わせの可能性
 
@@ -661,32 +533,42 @@ Lambda の同時実行数、DynamoDB のスループット、API Gateway や WAF
 
 ### AI の責務を軽くするもの
 
-**定型部分の品質のばらつきを大幅に減らせる**
+**定型部分の品質のばらつきを減らせる**
 
-CloudFront + S3 + WAF + セキュリティヘッダ、API Gateway + Cognito オーソライザー + アクセスログ + スロットリング、DynamoDB の CMK 暗号化 + PITR + 削除保護、Lambda の Powertools 統合。こうした定型部分は各ケースで同じ Generator / Construct を通して生成され、Checkov を通過しています。
+CloudFront + S3 + WAF + セキュリティヘッダ、API Gateway + Cognito オーソライザー + アクセスログ、DynamoDB の暗号化や PITR、Lambda の Powertools 統合など、定型部分は Generator / Construct を通して生成されます。AI が毎回すべてを手書きするより、実装のばらつきを抑えやすくなります。
 
 **Checkov がフィードバックループになる**
 
-Case 3 では Checkov の失敗（SQS の暗号化、バケットのバージョニング）を受けて AI が設計を修正しました。Generator が build に組み込んだ静的検査が、AI の手書き部分にも効いています。人間がレビューで拾うはずだった指摘の一部を、ビルドの段階で機械が返しています。
+Case 2 では、初回の Checkov で SQS の暗号化やログバケットのバージョニングが指摘され、Claude Code が設計を修正しました。Generator が build に組み込んだ静的検査が、Generator 外で AI が追加した CDK にも効いています。
 
 ### 人間のレビューを楽にするもの
 
-**AI の判断が「どの Generator を、どのオプションで」に圧縮され、追跡できる**
+**AI の判断過程を追跡しやすい**
 
-MCP のログを見れば、AI がいつ・何を調べ・何を選んだかが残ります。`S3SqsEventNotificationSchema` を最初期に引いた Case 3、`ts#api` と `ts#dynamodb` から入った Case 4 のように、設計判断の順序がツール呼び出しに現れるのは、レビューする側にとって助かります。
+MCP のログを見ると、どの Generator を調べ、どのオプションを検討したかが残ります。Case 2 では `S3SqsEventNotificationSchema` を早い段階で調べ、Case 3 では `ts#api` と `ts#dynamodb` から確認していました。最終コードだけを見るより、「何を候補にして、何を選んだか」を追いやすくなります。
 
-**レビューすべき場所が集約される**
+**レビューの起点を作りやすい**
 
-「AI によるアーキテクチャ判断」と「再現性のある Infrastructure as Code」をある程度分離できるのが、この組み合わせの良さだと思います。インフラ固有の差分や判断理由は `application-stack.ts` と DESIGN.md に集まりやすく、レビュー対象を絞る起点になります。ただし、認可、トランザクション、冪等性のような重要なロジックはアプリケーションコード側にもあるため、ここだけを見れば十分というわけではありません。
+インフラ側の追加差分や判断理由は `application-stack.ts` と DESIGN.md に集まりやすいため、レビューの入口を作りやすくなります。ただし、今回の Case 3 のように、整合性の要は DynamoDB の条件式やトランザクションを呼ぶアプリケーションコード側にあります。認可・状態遷移・冪等性まで含めてレビューする必要があります。
 
 ### 限界
 
-Generator にない部品（キュー、スケジューラ、メール、バケット）はやはり手書きで、ここは通常の「AI に CDK を書かせる」品質に戻ります。Generator の Construct にオプションが足りなければ改変も必要になります（Case 3）。しかし、裏を返せば、プラグインの守備範囲が広がるほど AI に任せられる範囲も広がる、という関係にあります。
+Generator にない部品は、結局 AI が CDK やアプリケーションコードを手書きします。Case 2 では S3 / SQS / DLQ を追加し、Generator が生成した Lambda Construct に props を足す改変まで行いました。Case 3 ではトランザクションや条件式の正しさが Generator によって保証されるわけではありません。
+
+つまり、プラグインの守備範囲が広がるほど定型部分を任せやすくなる一方、**本当に難しい要件ほど Generator の外側に設計判断が残る**という構造です。
 
 ## まとめ
 
-冒頭の問いは「ユーザーストーリーだけを渡したら、AI はどこまで自力でアーキテクチャを決めて実装まで持っていけるのか」でした。4 ケースを走らせた範囲での答えは、「Generator でカバーされる定番構成と、その外側にある非同期処理や整合性の設計までは自力で組み立てる。ただし、要件の解釈と既定値を動かす判断は人間に残る」です。
+今回見たかったのは、「ユーザーストーリーからかなりのところまで AWS 構成を生成できるか」だけではなく、**Generator の外側にあるアーキテクチャ判断やデータ設計まで、コーディングエージェントがどこまで踏み込めるか**でした。
 
-「AI に設計を丸投げする」のではなく、「AI が設計案と実装を出し、人間が DESIGN.md と `application-stack.ts`、さらに認可・トランザクション・冪等性などの重要なアプリケーションコードをレビューする」という運用で、たたき台を素早く作るのには良さそうです。
+本文の 3 ケースを並べると、境界が分かりやすくなります。
 
-設計・実装・検証のサイクルを速く回しつつ品質を担保するためにも、開発者自身が業務ドメインや背景を深く理解しておくことが重要になりそうです。
+- Case 1 では、認証付き Web アプリに必要な基本構成と S3 のアップロード方式まで組み立てました。
+- Case 2 では、「長時間処理」という要件から S3 → SQS → Lambda の非同期構成を選びました。
+- Case 3 では、「二重販売禁止」から DynamoDB のトランザクション、条件式、冪等キーまで設計しました。
+
+実施したケースはいずれも、具体的な AWS サービス名や構成を与えず、ビルド・テスト・`cdk synth`・Checkov が通るアプリ + インフラまで到達しました。一方で、要件解釈、セキュリティ既定の変更、数値を伴う非機能要件は人間側に残ります。
+
+そのため、「AI に設計を丸投げする」というより、AI に設計案と実装を作らせ、人間がその前提・境界条件・重要なアプリケーションロジックをレビューする使い方が現実的だと思います。
+
+`@aws/nx-plugin` は、そのとき AI の判断対象を減らし、定型部分を再現性のある Generator に寄せる役割を果たします。設計・実装・検証のサイクルを速くしながら品質を担保するには、AI の出力だけでなく、開発者自身が業務ドメインや非機能要件を理解していることが引き続き重要です。
