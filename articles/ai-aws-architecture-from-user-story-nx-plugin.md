@@ -549,20 +549,20 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=ticket-api --targetProject=t
 
 ## 4 ケースを比較してみる
 
-| | Case 1 画像共有 | Case 2 タスク通知 | Case 3 CSV 分析 | Case 4 チケット販売 |
+| 軸 | Case 1 画像共有 | Case 2 タスク通知 | Case 3 CSV 分析 | Case 4 チケット販売 |
 | --- | --- | --- | --- | --- |
-| 認証 | Cognito（MFA 必須のまま） | Cognito（MFA を任意に緩和） | Cognito + **API は IAM 認証**（サインアップ無効） | Cognito + `admin` グループ |
-| 認可 | 削除は投稿者のみ | **pk = userId で構造的に分離** | 所有者 ID を保存し他人は NOT_FOUND | 注文所有者 + 管理者グループ |
-| DB 判断 | DynamoDB（GSI 2） | DynamoDB（GSI 2） | DynamoDB（ジョブ状態） | DynamoDB（**TransactWriteItems**、1 座席 1 パーティション） |
-| Storage | S3（手書き、署名付き URL） | なし | S3（手書き、uploads / results） | なし |
-| 非同期処理 | なし（同期 confirm） | EventBridge rate(5min) → Lambda | **S3 → SQS（+DLQ）→ Lambda** | なし（同期 API と判断） |
-| イベント駆動 | 検討して見送り（S3 イベント） | ポーリング型を選択 | 採用 | 採用せず |
-| 整合性 | 削除の一貫性は未対応 | 通知の二重送信を条件付き更新で防止 | COMPLETED スキップ、状態遷移は一部無条件 | **トランザクション + 条件式 + 冪等キー** |
-| セキュリティ | Generator 既定 + 最小権限 IAM | Generator 既定 + SES 送信元制限 | Generator 既定 + CMK 共通鍵 | Generator 既定 + **WAF IP レート制限** |
-| 手書き CDK | S3 バケット | EventBridge、SES | S3、SQS、DLQ、通知、ESM | WAF ルール、Lambda 操作別設定、Cognito グループ |
-| 実行 Generator 数 | 7 | 9 | 9 | 7 |
-| Generator 生成物の改変 | なし | なし | **あり**（Lambda Construct に props 追加） | 軽微（logger、local-server） |
-| 人間の介入が要る点（主） | 画像配信の CDN 化、孤児オブジェクト | MFA 緩和の是非、SES サンドボックス | 処理容量の実測、IAM 認証の是非 | 負荷試験、DynamoDB ウォームアップ、公平性、条件式のテスト |
+| API の認証方式 | Cognito オーソライザー（JWT） | Cognito オーソライザー（JWT） | IAM 認証（SigV4、Generator 既定のまま） | Cognito オーソライザー（JWT） |
+| サインアップ / MFA | 自己サインアップ可 / MFA 必須（既定） | 自己サインアップ可 / MFA 任意（既定を変更） | 自己サインアップ不可（既定）/ MFA 必須（既定） | 自己サインアップ可 / MFA 必須（既定） |
+| 認可の実装 | 削除のみ投稿者チェック | パーティションキー = ユーザー ID | 所有者 ID を属性に保存、他人は 404 | 注文の所有者チェック + `admin` グループ |
+| データストア | DynamoDB + S3 | DynamoDB | DynamoDB + S3 | DynamoDB |
+| DynamoDB の設計 | GSI 2（全体フィード、投稿者別） | GSI 2（期限順、通知抽出） | GSI 1（所有者別）、ジョブの状態遷移 | 1 座席 1 パーティション、GSI 8 シャード、`TransactWriteItems` |
+| 非同期処理 | なし | EventBridge Rule（5 分）→ Lambda | S3 通知 → SQS（+ DLQ）→ Lambda | なし |
+| ユーザーへの通知 | なし | SES メール | なし | なし |
+| 重複・競合への対策 | なし | 条件付き更新（pending → sent） | 完了済みジョブのスキップ | トランザクション + 条件式 + 冪等キー |
+| 手書き CDK | S3 バケット | EventBridge Rule、SES | S3 バケット、SQS、DLQ、S3 通知、イベントソースマッピング | WAF レート制限ルール、Lambda 操作別設定、Cognito グループ |
+| Generator 実行回数 | 7 | 9 | 9 | 7 |
+| Generator 生成物の改変 | なし | なし | Lambda Construct に props 追加 | logger と local-server の小改変 |
+| 最優先で確認したい前提 | 画像配信を S3 署名付き URL 直にしたこと | MFA を任意に緩めたこと | 認証方式を既定（IAM）のまま通したこと | 同期 API のみで負荷試験がないこと |
 
 4 ケースを通じて共通していたのは次の点です。
 
