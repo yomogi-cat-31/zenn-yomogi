@@ -600,7 +600,6 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=ticket-api --targetProject=t
 
 - **フロント / API / 認証 / DB の「型」は完全に固定**：4 ケースとも `ts#website`（CloudFront + S3）+ `ts#api`（API Gateway REST + Lambda + tRPC）+ `ts#website#auth`（Cognito）+ `ts#dynamodb` で、`ts#rdb`（Aurora）と `smithy`、`py#*`、`http-lambda` は毎回「検討したが見送り」でした。これは要件から選んだというより、**Generator の既定値と、その既定に WAF・アクセスログ・Checkov が付いてくることへの信頼** で選んでいる面が強いと感じます。
 - **差が出るのは Generator の外側**：S3、SQS、EventBridge、SES、WAF のカスタムルール、トランザクション、GSI 設計は、すべて `application-stack.ts` とアプリコードの手書きです。ケースの難易度が上がるほど、Generator が担う割合は下がりました。
-- **Generator 由来の同じ落とし穴に 4 回とも当たった**：`ts#project` や `ts#api` から他パッケージを値 import したときの vitest のパス解決（`resolve.tsconfigPaths`）は、4 ケース中 4 ケースで修正が入っています。
 
 一方、4 ケースで割れたのはセキュリティ既定の扱いです。MFA 必須の既定を、Case 2 だけが「摩擦を優先」して任意に緩め、Case 1 と Case 4 は「既定を崩さずレビューに委ねる」とし、Case 3 は既定のまま触れていません。同じモデル・同じプロンプト形式でも、こうした判断はぶれます。
 
