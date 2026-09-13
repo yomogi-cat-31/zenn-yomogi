@@ -168,7 +168,7 @@ generator-guide connection {"sourceType":"ts#trpc-api","targetType":"ts#dynamodb
 generator-guide connection {"sourceType":"ts#react-website","targetType":"ts#trpc-api"}
 ```
 
-面白いのは、`ts#website` のガイドは `ux=cloudscape` で引いたのに、実行時は `--ux=shadcn` を選んでいる点です。ガイドを読んだうえで、ギャラリー UI には shadcn の方が向くと判断を変えたようです。
+`ts#website` のガイドは `ux=cloudscape` で引いたのに、実行時は `--ux=shadcn` を選んでいる点は特徴的でした。ガイドを読んだうえで、ギャラリー UI には shadcn の方が向くと判断を変えたことがDESIGN.mdに残されていました。
 
 実行した Generator は 7 回でした。
 
@@ -183,14 +183,12 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=website --targetProject=phot
 pnpm nx g @aws/nx-plugin:connection --sourceProject=photo-api --targetProject=photo-db
 ```
 
-選ばなかった Generator として、`smithy`、`http-lambda`、`integrationPattern=shared`（操作ごとに S3/DynamoDB 権限を分けたかったため）、`ts#rdb`、`ts#lambda-function`（S3 イベント連携を採用しなかったため）、`cloudscape` が理由付きで挙がっていました。
-
 ### 最終的な AWS アーキテクチャ
 
 ![Case 1 のアーキテクチャ。CloudFront + S3 の SPA、Cognito、API Gateway REST + Lambda ×4、DynamoDB、手書きの S3 PhotoBucket。画像は署名付き URL でブラウザから S3 に直接 PUT / GET する](/images/nx-plugin-user-story/case1-architecture.png)
-*Case 1：画像共有アプリ。グレーの枠は Generator が生成した部分（枠の下に Generator 名）、オレンジの破線枠は Generator がなく手書きした部分、オレンジの矢印は要件に直結する経路です。以降の図も同じ凡例です。*
+*Case 1：画像共有アプリ。グレーの枠は Generator が生成した部分（枠の下に Generator 名）、オレンジの破線枠は Generator がなく手書きした部分、オレンジの矢印は要件に直結する経路です。*
 
-特徴的なのが、**画像配信には CloudFront を使っていません**。一覧 API が写真ごとに S3 の署名付き GET URL を返す方式です。
+個人的にはCloudFrontが入るかなと思っていたのですが、**画像配信には CloudFront を使っていません**。一覧 API が写真ごとに S3 の署名付き GET URL を返す方式です。
 
 ### AI が置いた前提（人間が確認すべきポイント）
 
@@ -303,10 +301,6 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=…/task-web --targetProject
 pnpm nx g @aws/nx-plugin:connection --sourceProject=…/task-api --targetProject=…/task-store
 pnpm nx g @aws/nx-plugin:ts#infra --name=infra
 ```
-
-（`--no-interactive --prefer-install-dependencies=false` は省略）
-
-選ばなかった Generator として DESIGN.md には `ts#rdb`（過剰）、`smithy`（同一モノレポの TS なら tRPC）、`http-lambda`（WAF なし）、`auth=iam`（ユーザー識別が間接的）、`py#*`、`agent`/`mcp` 系、`terraform#project` が理由付きで列挙されていました。
 
 ### 最終的な AWS アーキテクチャ
 
@@ -432,8 +426,6 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=@case3-csv-analytics/api --t
 ```
 
 S3 バケット、SQS + DLQ、S3 イベント通知、Lambda の SQS イベントソースマッピングは Generator にないため、すべて `application-stack.ts` に CDK で手書きされていました。また、`ts#lambda-function` が生成した Construct にタイムアウト・メモリ・DLQ を渡す `props` がなかったため、**生成された Construct に引数を追加する小さな改変** をしています（4 ケース中、`packages/common` に手を入れたのはこのケースだけです）。
-
-選ばなかった Generator としては、`py#*`（pandas は魅力だが TS で型を共有する方を優先）、`ts#lambda-function --event=S3Schema`（S3 → Lambda 直接は再試行制御のため見送り）、`connection csv-processor → jobs`（素の `ts#project` は `connection` の source として非対応なので IAM 権限は CDK で手書き）などが挙がっていました。
 
 ### 最終的な AWS アーキテクチャ
 
@@ -609,7 +601,8 @@ pnpm nx g @aws/nx-plugin:connection --sourceProject=ticket-api --targetProject=t
 - **フロント / API / 認証 / DB の「型」は完全に固定**：4 ケースとも `ts#website`（CloudFront + S3）+ `ts#api`（API Gateway REST + Lambda + tRPC）+ `ts#website#auth`（Cognito）+ `ts#dynamodb` で、`ts#rdb`（Aurora）と `smithy`、`py#*`、`http-lambda` は毎回「検討したが見送り」でした。これは要件から選んだというより、**Generator の既定値と、その既定に WAF・アクセスログ・Checkov が付いてくることへの信頼** で選んでいる面が強いと感じます。
 - **差が出るのは Generator の外側**：S3、SQS、EventBridge、SES、WAF のカスタムルール、トランザクション、GSI 設計は、すべて `application-stack.ts` とアプリコードの手書きです。ケースの難易度が上がるほど、Generator が担う割合は下がりました。
 - **Generator 由来の同じ落とし穴に 4 回とも当たった**：`ts#project` や `ts#api` から他パッケージを値 import したときの vitest のパス解決（`resolve.tsconfigPaths`）は、4 ケース中 4 ケースで修正が入っています。
-- **セキュリティ既定の扱いが割れた**：MFA 必須の既定を、Case 2 だけが「摩擦を優先」して緩め、Case 1 と Case 4 は「既定を崩さずレビューに委ねる」としました。同じモデル・同じプロンプト形式でも、こうした判断はぶれます。
+
+一方、4 ケースで割れたのはセキュリティ既定の扱いです。MFA 必須の既定を、Case 2 だけが「摩擦を優先」して任意に緩め、Case 1 と Case 4 は「既定を崩さずレビューに委ねる」とし、Case 3 は既定のまま触れていません。同じモデル・同じプロンプト形式でも、こうした判断はぶれます。
 
 ## どこまで AI に任せられそうか
 
