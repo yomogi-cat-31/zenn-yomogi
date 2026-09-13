@@ -123,17 +123,17 @@ DESIGN.md の要件表から抜粋します。
 
 ### 選択した AWS サービス
 
-| 役割 | 選択されたもの | 選択理由（DESIGN.md より要約） |
-| --- | --- | --- |
-| Frontend | S3 + CloudFront（React + shadcn/ui + Tailwind） | `ts#website` の既定。「ギャラリーの自由なグリッドレイアウトには Tailwind + shadcn が扱いやすい」 |
-| API | API Gateway REST + Lambda（tRPC、操作ごとに Lambda 分離） | `ts#api` の既定。フロントと型を共有できる tRPC。REST は WAF・アクセスログ付きで Cognito オーソライザーが使える |
-| Authentication | Cognito User Pool + Identity Pool + Hosted UI | `ts#website#auth` が標準で構成。API Gateway と直結でき JWT 検証を自前実装しなくてよい |
-| Database | DynamoDB（ElectroDB、GSI 2 本：全体フィード / 投稿者別） | 一覧と投稿者別一覧を GSI で Query できる。Aurora は過剰 |
-| Storage | **S3（PhotoBucket、手書き）**：KMS CMK、バージョニング、非公開、CORS、ライフサイクル | 画像はオブジェクトストレージが最適。署名付き URL で API を経由せず転送 |
-| Upload 方式 | 署名付き PUT URL（5 分）→ `confirmUpload` で HeadObject 検証 | Base64 で API 経由は 10 MB 制限・WAF の Body 制限に抵触。S3 イベント→Lambda 登録の非同期方式は「タイトル・説明を確定しづらい」ため見送り |
-| CDN | CloudFront（SPA 配信のみ）。**画像配信には CloudFront を使わず S3 署名付き GET URL** | 「CloudFront + 署名付き Cookie は効率的だがキーペア管理が必要。まずは S3 署名付き URL で実現し、規模拡大時の改善候補」 |
-| Async | なし | ― |
-| Security | WAF（API / CloudFront）、KMS、Cognito **MFA 必須（Generator 既定のまま）** | 「写真共有アプリとしては重い可能性があるが、セキュア既定を崩さずレビュー判断に委ねた」 |
+| 役割 | 選択されたもの | Generator 既定か手書きか | 選択理由（DESIGN.md より要約） |
+| --- | --- | --- | --- |
+| Frontend | S3 + CloudFront（React + shadcn/ui + Tailwind） | Generator（`ts#website` の既定） | `ts#website` の既定。「ギャラリーの自由なグリッドレイアウトには Tailwind + shadcn が扱いやすい」 |
+| API | API Gateway REST + Lambda（tRPC、操作ごとに Lambda 分離） | Generator（`ts#api` の既定 `rest-lambda`） | `ts#api` の既定。フロントと型を共有できる tRPC。REST は WAF・アクセスログ付きで Cognito オーソライザーが使える |
+| Authentication | Cognito User Pool + Identity Pool + Hosted UI | Generator（`ts#website#auth`、`ts#api --auth=cognito` を指定） | `ts#website#auth` が標準で構成。API Gateway と直結でき JWT 検証を自前実装しなくてよい |
+| Database | DynamoDB（ElectroDB、GSI 2 本：全体フィード / 投稿者別） | Generator + 手書き（テーブルは `ts#dynamodb`、エンティティと GSI 設計は手書き） | 一覧と投稿者別一覧を GSI で Query できる。Aurora は過剰 |
+| Storage | **S3（PhotoBucket、手書き）**：KMS CMK、バージョニング、非公開、CORS、ライフサイクル | **手書き CDK**（対応する Generator なし） | 画像はオブジェクトストレージが最適。署名付き URL で API を経由せず転送 |
+| Upload 方式 | 署名付き PUT URL（5 分）→ `confirmUpload` で HeadObject 検証 | **手書き**（アプリコードと、CDK の CORS / 操作別 IAM） | Base64 で API 経由は 10 MB 制限・WAF の Body 制限に抵触。S3 イベント→Lambda 登録の非同期方式は「タイトル・説明を確定しづらい」ため見送り |
+| CDN | CloudFront（SPA 配信のみ）。**画像配信には CloudFront を使わず S3 署名付き GET URL** | Generator（SPA 配信）。画像配信は手書き（署名付き URL） | 「CloudFront + 署名付き Cookie は効率的だがキーペア管理が必要。まずは S3 署名付き URL で実現し、規模拡大時の改善候補」 |
+| Async | なし | ― | ― |
+| Security | WAF（API / CloudFront）、KMS、Cognito **MFA 必須（Generator 既定のまま）** | Generator 既定（WAF、KMS、MFA 必須）。写真バケットの KMS は手書き | 「写真共有アプリとしては重い可能性があるが、セキュア既定を崩さずレビュー判断に委ねた」 |
 
 ### @aws/nx-plugin で利用した Generator
 
@@ -223,17 +223,17 @@ DESIGN.md に書かれた要件解釈は、機能要件 6 項目と、自分で�
 
 ### 選択した AWS サービス
 
-| 役割 | 選択されたもの | 選択理由（DESIGN.md より要約） |
-| --- | --- | --- |
-| Frontend | S3 + CloudFront（React + Cloudscape） | `ts#website` の既定。一覧・フォーム・モーダル中心の画面には Cloudscape の部品がそのまま使える |
-| API | API Gateway REST + Lambda（tRPC） | `ts#api` の既定。REST を選ぶと Cognito オーソライザー・WAF・アクセスログが付く。HTTP API は WAF が付かないため見送り |
-| Authentication | Cognito User Pool + Identity Pool | `ts#website#auth` と `ts#api --auth=cognito` が直接サポート。JWT の `sub` をそのまま所有者キーにできる |
-| Database | DynamoDB（シングルテーブル、ElectroDB、GSI 2 本） | pk=userId で所有者分離が自然に表現でき、キー設計そのものが認可境界になる。Aurora は VPC・接続管理・コストが過剰 |
-| Storage | なし（ファイル要件なし） | ― |
-| Async / Schedule | **EventBridge Rule（rate 5 分）→ Lambda** | ポーリング型。タスクごとに EventBridge Scheduler の単発スケジュールを作る方式は秒精度だが、更新・削除のたびに同期が必要で障害点が増えると判断 |
-| Notification | **Amazon SES**（EmailIdentity を CDK で登録） | SNS のメール購読は宛先ごとに購読確認が必要でユーザー体験が悪い。IAM は `ses:SendEmail` を送信元 ARN + `ses:FromAddress` 条件で限定 |
-| CDN | CloudFront（Generator 既定） | ― |
-| Security | WAF（API / CloudFront）、KMS CMK、Cognito MFA は **TOTP のみ任意に変更** | SMS MFA は電話番号必須・送信コストがあるため無効化。「個人向けタスク管理としてはサインアップの摩擦を優先」 |
+| 役割 | 選択されたもの | Generator 既定か手書きか | 選択理由（DESIGN.md より要約） |
+| --- | --- | --- | --- |
+| Frontend | S3 + CloudFront（React + Cloudscape） | Generator（`ts#website --ux=cloudscape` を指定） | `ts#website` の既定。一覧・フォーム・モーダル中心の画面には Cloudscape の部品がそのまま使える |
+| API | API Gateway REST + Lambda（tRPC） | Generator（`ts#api` の既定 `rest-lambda`） | `ts#api` の既定。REST を選ぶと Cognito オーソライザー・WAF・アクセスログが付く。HTTP API は WAF が付かないため見送り |
+| Authentication | Cognito User Pool + Identity Pool | Generator + 手書き（`ts#website#auth`。MFA の既定を任意に変更した部分は手書き） | `ts#website#auth` と `ts#api --auth=cognito` が直接サポート。JWT の `sub` をそのまま所有者キーにできる |
+| Database | DynamoDB（シングルテーブル、ElectroDB、GSI 2 本） | Generator + 手書き（テーブルは `ts#dynamodb`、pk=userId と GSI 2 本の設計は手書き） | pk=userId で所有者分離が自然に表現でき、キー設計そのものが認可境界になる。Aurora は VPC・接続管理・コストが過剰 |
+| Storage | なし（ファイル要件なし） | ― | ― |
+| Async / Schedule | **EventBridge Rule（rate 5 分）→ Lambda** | **手書き CDK**（EventBridge Rule）+ Generator（関数本体は `ts#lambda-function`） | ポーリング型。タスクごとに EventBridge Scheduler の単発スケジュールを作る方式は秒精度だが、更新・削除のたびに同期が必要で障害点が増えると判断 |
+| Notification | **Amazon SES**（EmailIdentity を CDK で登録） | **手書き CDK**（SES EmailIdentity、IAM 条件） | SNS のメール購読は宛先ごとに購読確認が必要でユーザー体験が悪い。IAM は `ses:SendEmail` を送信元 ARN + `ses:FromAddress` 条件で限定 |
+| CDN | CloudFront（Generator 既定） | Generator（`ts#website` の既定） | ― |
+| Security | WAF（API / CloudFront）、KMS CMK、Cognito MFA は **TOTP のみ任意に変更** | Generator 既定（WAF、KMS）+ 手書き（MFA 緩和、SES 権限の絞り込み） | SMS MFA は電話番号必須・送信コストがあるため無効化。「個人向けタスク管理としてはサインアップの摩擦を優先」 |
 
 ### @aws/nx-plugin で利用した Generator
 
@@ -324,17 +324,17 @@ Generator で生まれたのは、この図の CloudFront / S3 / WAF / Cognito /
 
 ### 選択した AWS サービス
 
-| 役割 | 選択されたもの | 選択理由（DESIGN.md より要約） |
-| --- | --- | --- |
-| Frontend | S3 + CloudFront（React + Cloudscape） | Cloudscape は `BarChart` などのチャート部品を標準で持つため。shadcn だとチャートを別途導入する必要がある |
-| API | API Gateway REST + Lambda（tRPC、5 プロシージャ） | Generator 既定。WAF・アクセスログ付き |
-| Authentication | Cognito User Pool + Identity Pool、**API は IAM 認証（SigV4）** | Identity Pool の一時クレデンシャルで API を呼ぶ。セルフサインアップは無効（管理者がユーザーを作る運用を想定） |
-| Database | DynamoDB（ジョブ状態と所有者、GSI で所有者別一覧） | キー参照と所有者別一覧だけの単純なアクセスパターン |
-| Storage | **S3 DataBucket（手書き）**：`uploads/` と `results/` をプレフィックスで分離、KMS CMK、ライフサイクル | 署名付き URL で直接 PUT。結果 JSON も同じバケットに |
-| Async | **S3 イベント通知 → SQS（+ DLQ）→ Lambda（15 分 / 2 GB）** | S3 → Lambda 直接に比べ、再試行回数・可視性タイムアウト・DLQ を明示的に制御できる。**Step Functions は単一ステップには過剰、EventBridge は再試行制御が SQS より弱い** と判断。**ECS/Fargate や Glue は 15 分を超える超大容量で必要になるが、まずはサーバレス最小構成** |
-| 進捗確認 | DynamoDB のジョブ状態を API 経由でポーリング | WebSocket / tRPC subscription は「画面を閉じてよい前提なので不要」 |
-| CDN | CloudFront（SPA 配信のみ） | ― |
-| Security | WAF、KMS CMK（S3 / SQS 共通の `DataKey`）、Cognito MFA 必須（既定のまま）、S3 アクセスログ | 「S3 → SQS 通知は AWS 管理キー `aws/sqs` を使えないため CMK が必要」 |
+| 役割 | 選択されたもの | Generator 既定か手書きか | 選択理由（DESIGN.md より要約） |
+| --- | --- | --- | --- |
+| Frontend | S3 + CloudFront（React + Cloudscape） | Generator（`ts#website --ux=cloudscape` を指定） | Cloudscape は `BarChart` などのチャート部品を標準で持つため。shadcn だとチャートを別途導入する必要がある |
+| API | API Gateway REST + Lambda（tRPC、5 プロシージャ） | Generator（`ts#api` の既定 `rest-lambda`） | Generator 既定。WAF・アクセスログ付き |
+| Authentication | Cognito User Pool + Identity Pool、**API は IAM 認証（SigV4）** | Generator（`ts#api` の既定 `auth=iam`、`ts#website#auth` の既定 `allowSignup=false`）。他 3 ケースはここを Cognito に変えている | Identity Pool の一時クレデンシャルで API を呼ぶ。セルフサインアップは無効（管理者がユーザーを作る運用を想定） |
+| Database | DynamoDB（ジョブ状態と所有者、GSI で所有者別一覧） | Generator + 手書き（テーブルは `ts#dynamodb`、ジョブ状態のエンティティは手書き） | キー参照と所有者別一覧だけの単純なアクセスパターン |
+| Storage | **S3 DataBucket（手書き）**：`uploads/` と `results/` をプレフィックスで分離、KMS CMK、ライフサイクル | **手書き CDK**（対応する Generator なし） | 署名付き URL で直接 PUT。結果 JSON も同じバケットに |
+| Async | **S3 イベント通知 → SQS（+ DLQ）→ Lambda（15 分 / 2 GB）** | **手書き CDK**（S3 通知、SQS、DLQ、イベントソースマッピング）+ Generator（関数本体は `ts#lambda-function`。Construct に props を追加する改変あり） | S3 → Lambda 直接に比べ、再試行回数・可視性タイムアウト・DLQ を明示的に制御できる。**Step Functions は単一ステップには過剰、EventBridge は再試行制御が SQS より弱い** と判断。**ECS/Fargate や Glue は 15 分を超える超大容量で必要になるが、まずはサーバレス最小構成** |
+| 進捗確認 | DynamoDB のジョブ状態を API 経由でポーリング | **手書き**（アプリコード） | WebSocket / tRPC subscription は「画面を閉じてよい前提なので不要」 |
+| CDN | CloudFront（SPA 配信のみ） | Generator（`ts#website` の既定） | ― |
+| Security | WAF、KMS CMK（S3 / SQS 共通の `DataKey`）、Cognito MFA 必須（既定のまま）、S3 アクセスログ | Generator 既定（WAF、MFA 必須）+ 手書き（S3 / SQS 共通の CMK、アクセスログバケット） | 「S3 → SQS 通知は AWS 管理キー `aws/sqs` を使えないため CMK が必要」 |
 
 ### @aws/nx-plugin で利用した Generator
 
@@ -438,17 +438,17 @@ S3 バケット、SQS + DLQ、S3 イベント通知、Lambda の SQS イベン�
 
 ### 選択した AWS サービス
 
-| 役割 | 選択されたもの | 選択理由（DESIGN.md より要約） |
-| --- | --- | --- |
-| Frontend | S3 + CloudFront（React + Cloudscape） | 「発売直後のアクセス集中を API に到達させる前にエッジで吸収する」 |
-| API | API Gateway REST + Lambda（プロシージャごとに 1 関数、9 個） | `orders.hold` だけタイムアウトを短く（10 秒）、`events.create` だけ長く（60 秒）など操作ごとの調整と最小権限のため isolated |
-| Authentication | Cognito User Pool + Identity Pool、`admin` グループ | 購入者識別（`sub`）と管理操作の認可（グループ）を標準機能で |
-| Database | **DynamoDB（オンデマンド、単一テーブル、`TransactWriteItems`）** | 「条件付き書き込みとトランザクションが、同一座席の二重販売を DB 層で排他する要件に直結する」。RDB の行ロックでも実現できるが、接続数スパイクへの対応（RDS Proxy、スケールアップ判断）で運用負荷が高い |
-| Storage | なし | ― |
-| Async / Queue | **なし（同期 API）** | 「SQS でキューイングして直列処理は順序公平性が上がるが、非同期 UX になり複雑さが見合わない。待合室やキューは負荷試験で上限に当たった段階で前段に足せる」 |
-| Cache / Lock | なし（ElastiCache 不採用） | 「永続層と別にロック層を持つと整合性の境界が増える。DynamoDB 単体で完結する方が単純」 |
-| CDN | CloudFront | ― |
-| Security | WAF 管理ルール + **手書きの IP レート制限（1,000 req / 5 分）**、API Gateway スロットリング（Generator 既定 10,000 rps / バースト 5,000）、MFA 必須（既定のまま） | 「過剰アクセスを API より手前で落とす」 |
+| 役割 | 選択されたもの | Generator 既定か手書きか | 選択理由（DESIGN.md より要約） |
+| --- | --- | --- | --- |
+| Frontend | S3 + CloudFront（React + Cloudscape） | Generator（`ts#website --ux=cloudscape` を指定） | 「発売直後のアクセス集中を API に到達させる前にエッジで吸収する」 |
+| API | API Gateway REST + Lambda（プロシージャごとに 1 関数、9 個） | Generator + 手書き（API 本体は `ts#api`。操作別タイムアウトと書き込み権限の分離は手書き） | `orders.hold` だけタイムアウトを短く（10 秒）、`events.create` だけ長く（60 秒）など操作ごとの調整と最小権限のため isolated |
+| Authentication | Cognito User Pool + Identity Pool、`admin` グループ | Generator + 手書き（`ts#website#auth`。`admin` グループは手書き） | 購入者識別（`sub`）と管理操作の認可（グループ）を標準機能で |
+| Database | **DynamoDB（オンデマンド、単一テーブル、`TransactWriteItems`）** | Generator + 手書き（テーブルは `ts#dynamodb`、データモデル・条件式・シャーディングは手書き。生成された GSI2 は削除） | 「条件付き書き込みとトランザクションが、同一座席の二重販売を DB 層で排他する要件に直結する」。RDB の行ロックでも実現できるが、接続数スパイクへの対応（RDS Proxy、スケールアップ判断）で運用負荷が高い |
+| Storage | なし | ― | ― |
+| Async / Queue | **なし（同期 API）** | ―（意図的に採用せず） | 「SQS でキューイングして直列処理は順序公平性が上がるが、非同期 UX になり複雑さが見合わない。待合室やキューは負荷試験で上限に当たった段階で前段に足せる」 |
+| Cache / Lock | なし（ElastiCache 不採用） | ―（意図的に採用せず） | 「永続層と別にロック層を持つと整合性の境界が増える。DynamoDB 単体で完結する方が単純」 |
+| CDN | CloudFront | Generator（`ts#website` の既定） | ― |
+| Security | WAF 管理ルール + **手書きの IP レート制限（1,000 req / 5 分）**、API Gateway スロットリング（Generator 既定 10,000 rps / バースト 5,000）、MFA 必須（既定のまま） | Generator 既定（WAF 管理ルール、スロットリング、MFA 必須）+ **手書き**（WAF の IP レート制限ルール） | 「過剰アクセスを API より手前で落とす」 |
 
 ### @aws/nx-plugin で利用した Generator
 
