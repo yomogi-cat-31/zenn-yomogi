@@ -2,8 +2,8 @@
 title: "WordPress製LPに潜むCWE-219、確認のススメ"
 emoji: "🔍"
 type: "tech"
-topics: ["security", "wordpress", "nginx", "php"]
-published: false
+topics: ["security", "wordpress", "nginx", "php", "lp"]
+published: true
 ---
 
 キャンペーンや広告用のWordPress製のLP（ランディングページ）は、短い期間で作ることができ便利なのですが、時折、**ドキュメントルートの下に、見られてはいけないファイルが置かれたまま**になっていることがあります。これはCWEでは **CWE-219: Storage of File with Sensitive Data Under Web Root** に分類されます。
